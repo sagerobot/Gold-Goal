@@ -1,0 +1,28 @@
+## Interface: 120100, 120007
+## Title: GoldGoal
+## Notes: A savings plan for big gold targets: warband-wide wealth, a self-adjusting daily quota and a projected finish date.
+## Author: sagerobot
+## Version: 0.1.0
+## SavedVariables: GoldGoalDB
+## IconTexture: Interface\AddOns\GoldGoal\media\coin64.png
+## X-Category: Miscellaneous
+## OptionalDeps: EllesmereUI, Syndicator, CraftSimPL
+
+Libs\LibStub\LibStub.lua
+Libs\CallbackHandler-1.0\CallbackHandler-1.0.lua
+Libs\LibDataBroker-1.1\LibDataBroker-1.1.lua
+Core.lua
+Style.lua
+Money.lua
+Ledger.lua
+Crafting.lua
+Goal.lua
+Widgets.lua
+GoalEditor.lua
+Bar.lua
+Splash.lua
+Broker.lua
+Tabs.lua
+Settings.lua
+Window.lua
+EUIOptions.lua

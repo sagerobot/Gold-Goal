@@ -1,0 +1,10 @@
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+.DS_Store
+
+# Lua test artifacts
+*.log
+luacov.*

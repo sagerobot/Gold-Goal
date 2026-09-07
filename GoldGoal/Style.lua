@@ -1,0 +1,458 @@
+-- GoldGoal: visual style.
+-- With EllesmereUI installed the window registers with its public skinning
+-- API (EllesmereUI/SKINNING_API.md) and is painted by EllesmereUI itself, so it
+-- follows the user's window style, accent colour and font like any of its own
+-- modules. Without it (or with third-party skinning turned off) the same flat
+-- look is painted here with fixed colours.
+--
+-- Widgets are built before EllesmereUI has decided: every styling request is
+-- recorded and replayed once the mode is known, or when it changes.
+local _, ns = ...
+
+local Style = {}
+ns.Style = Style
+
+-- Flat palette: the EllesmereUI window-skin defaults.
+local ACCENT   = { 12 / 255, 210 / 255, 157 / 255 }
+local BG       = { 0.08, 0.08, 0.08, 0.92 }
+local INSET    = { 0.04, 0.04, 0.04, 0.85 }
+local BORDER   = { 0.20, 0.20, 0.20, 1 }
+local TAB_BG   = { 0.068, 0.056, 0.052, 1 }
+local BAR      = { 0, 0, 0, 0.5 }
+local FONT     = STANDARD_TEXT_FONT
+
+Style.mode = nil        -- nil until decided, then "skin" or "flat"
+local S                 -- the EllesmereUI facade
+local entries = {}      -- every styling request, replayed when the mode is decided or changes
+local looksCallbacks = {}
+local flat = {}         -- flat-mode painters, keyed like the public functions
+local skin = {}         -- skin-mode painters
+
+-------------------------------------------------------------------------------
+-- Dispatch
+-------------------------------------------------------------------------------
+local function Apply(entry)
+    local impl = (Style.mode == "skin" and skin or flat)[entry.kind]
+    if not impl then return end
+    local ok, err = pcall(impl, unpack(entry.args, 1, entry.n))
+    if not ok then geterrorhandler()(err) end
+end
+
+local function Request(kind, ...)
+    local entry = { kind = kind, args = { ... }, n = select("#", ...) }
+    entries[#entries + 1] = entry
+    if Style.mode then Apply(entry) end
+end
+
+-- Decides (or switches) the mode and paints everything requested so far.
+function Style.Finalize(mode, facade)
+    if mode == "skin" then
+        S = facade
+    elseif Style.mode == "skin" then
+        return -- never downgrade a skinned window
+    end
+    if Style.mode == mode then return end
+    Style.mode = mode
+    for _, entry in ipairs(entries) do Apply(entry) end
+    if mode == "skin" and S.OnLooksChanged then S.OnLooksChanged(Style.FireLooksChanged) end
+    Style.FireLooksChanged()
+end
+
+function Style.IsSkinned()
+    return Style.mode == "skin"
+end
+
+function Style.OnLooksChanged(fn)
+    looksCallbacks[#looksCallbacks + 1] = fn
+end
+
+function Style.FireLooksChanged()
+    for _, fn in ipairs(looksCallbacks) do
+        local ok, err = pcall(fn)
+        if not ok then geterrorhandler()(err) end
+    end
+end
+
+-------------------------------------------------------------------------------
+-- Colours and fonts
+-------------------------------------------------------------------------------
+function Style.Accent()
+    if S and S.GetAccentColor then
+        local r, g, b = S.GetAccentColor()
+        if r then return r, g, b end
+    end
+    return ACCENT[1], ACCENT[2], ACCENT[3]
+end
+
+function Style.AccentHex()
+    return ns.HexColor(Style.Accent())
+end
+
+-------------------------------------------------------------------------------
+-- Flat helpers
+-------------------------------------------------------------------------------
+local function Solid(parent, layer, c, sublevel)
+    local t = parent:CreateTexture(nil, layer or "BACKGROUND", nil, sublevel)
+    t:SetColorTexture(c[1], c[2], c[3], c[4] or 1)
+    return t
+end
+
+local function Crisp(t)
+    t:SetSnapToPixelGrid(false)
+    t:SetTexelSnappingBias(0)
+end
+
+-- 1px border on a child frame one level above the parent.
+local function FlatBorder(frame, c)
+    if frame.ggBorder then return frame.ggBorder end
+    local bf = CreateFrame("Frame", nil, frame)
+    bf:SetAllPoints(frame)
+    bf:SetFrameLevel((frame:GetFrameLevel() or 0) + 1)
+    bf:EnableMouse(false)
+    for _, side in ipairs({ "TOP", "BOTTOM", "LEFT", "RIGHT" }) do
+        local t = bf:CreateTexture(nil, "OVERLAY", nil, 7)
+        t:SetColorTexture(c[1], c[2], c[3], c[4] or 1)
+        Crisp(t)
+        if side == "TOP" or side == "BOTTOM" then
+            t:SetPoint(side .. "LEFT"); t:SetPoint(side .. "RIGHT"); t:SetHeight(1)
+        else
+            t:SetPoint("TOP" .. side); t:SetPoint("BOTTOM" .. side); t:SetWidth(1)
+        end
+    end
+    frame.ggBorder = bf
+    return bf
+end
+
+local function FadeTextures(frame, keep)
+    for i = 1, select("#", frame:GetRegions()) do
+        local r = select(i, frame:GetRegions())
+        if r and r.IsObjectType and r:IsObjectType("Texture") and not (keep and keep[r]) then r:SetAlpha(0) end
+    end
+end
+
+local function Label(widget)
+    return widget.Text or (widget.GetFontString and widget:GetFontString())
+end
+
+-------------------------------------------------------------------------------
+-- Window shell and panels
+-------------------------------------------------------------------------------
+-- opts.bottomBar = height adds a footer band; opts.noTopBar skips the title band.
+function Style.Shell(frame, opts) Request("Shell", frame, opts) end
+function skin.Shell(frame, opts) S.Shell(frame, opts) end
+function flat.Shell(frame, opts)
+    if frame.ggShell then return end
+    frame.ggShell = true
+    Solid(frame, "BACKGROUND", BG, -8):SetAllPoints()
+    if not (opts and opts.noTopBar) then
+        local top = Solid(frame, "BACKGROUND", BAR, -5)
+        top:SetPoint("TOPLEFT"); top:SetPoint("TOPRIGHT"); top:SetHeight(25)
+    end
+    local bb = opts and opts.bottomBar
+    if bb then
+        local bottom = Solid(frame, "BACKGROUND", BAR, -5)
+        bottom:SetPoint("BOTTOMLEFT"); bottom:SetPoint("BOTTOMRIGHT")
+        bottom:SetHeight(type(bb) == "number" and bb or 25)
+    end
+    if not (opts and opts.noBorder) then FlatBorder(frame, BORDER) end
+end
+
+-- opts.inset = darker fill, opts.noBorder, opts.noBg
+function Style.Panel(frame, opts) Request("Panel", frame, opts) end
+function skin.Panel(frame, opts) S.Panel(frame, opts) end
+function flat.Panel(frame, opts)
+    if frame.ggPanel then return end
+    frame.ggPanel = true
+    if not (opts and opts.noBg) then Solid(frame, "BACKGROUND", (opts and opts.inset) and INSET or BG, -6):SetAllPoints() end
+    if not (opts and opts.noBorder) then FlatBorder(frame, BORDER) end
+end
+
+-------------------------------------------------------------------------------
+-- Text
+-------------------------------------------------------------------------------
+-- Re-fonts an existing FontString (keeps its size). Colour optional.
+function Style.Font(fs, r, g, b) Request("Font", fs, r, g, b) end
+function skin.Font(fs, r, g, b)
+    if r then S.Font(fs, r, g, b); return end
+    -- the skin primes a shadow font object; keep the colour set at creation
+    local cr, cg, cb, ca = fs:GetTextColor()
+    S.Font(fs)
+    if cr then fs:SetTextColor(cr, cg, cb, ca or 1) end
+end
+function flat.Font(fs, r, g, b)
+    local _, size = fs:GetFont()
+    fs:SetFont(FONT, size or 12, "")
+    fs:SetShadowColor(0, 0, 0, 1)
+    fs:SetShadowOffset(1, -1)
+    if r then fs:SetTextColor(r, g, b or r) end
+end
+
+-- A new FontString in the house font at the given size.
+function Style.Text(parent, size, r, g, b, a, layer)
+    local fs = parent:CreateFontString(nil, layer or "OVERLAY")
+    fs:SetFont(FONT, size or 12, "")
+    fs:SetTextColor(r or 1, g or 1, b or 1, a or 1)
+    Style.Font(fs)
+    return fs
+end
+
+-------------------------------------------------------------------------------
+-- Buttons
+-------------------------------------------------------------------------------
+-- Flat block button. Expects a .Text FontString (or GetFontString) for the label.
+-- keepKeys names texture regions (e.g. { "Icon" }) that must stay visible.
+function Style.Button(btn, keepKeys) Request("Button", btn, keepKeys) end
+function skin.Button(btn, keepKeys)
+    S.Button(btn, keepKeys)
+    local fs = Label(btn)
+    if fs then S.Font(fs); S.StateButtonLabel(btn) end
+end
+function flat.Button(btn, keepKeys)
+    if btn.ggButton then return end
+    btn.ggButton = true
+    local keep = {}
+    for _, k in ipairs(keepKeys or {}) do if btn[k] then keep[btn[k]] = true end end
+    FadeTextures(btn, keep)
+    for _, getter in ipairs({ "GetNormalTexture", "GetPushedTexture", "GetDisabledTexture", "GetHighlightTexture" }) do
+        local t = btn[getter] and btn[getter](btn)
+        if t and not keep[t] then t:SetAlpha(0) end
+    end
+    Solid(btn, "BACKGROUND", BG):SetAllPoints()
+    FlatBorder(btn, BORDER)
+    Solid(btn, "HIGHLIGHT", { 1, 1, 1, 0.1 }):SetAllPoints()
+    local fs = Label(btn)
+    if fs then
+        flat.Font(fs)
+        local function reflect()
+            if btn:IsEnabled() then fs:SetTextColor(1, 1, 1) else fs:SetTextColor(0.5, 0.5, 0.5) end
+        end
+        btn:HookScript("OnEnable", reflect)
+        btn:HookScript("OnDisable", reflect)
+        reflect()
+    end
+end
+
+-- Text input (InputBoxTemplate): near-black box with a border.
+function Style.EditBox(eb) Request("EditBox", eb) end
+function skin.EditBox(eb)
+    S.EditBox(eb)
+    S.Font(eb)
+end
+function flat.EditBox(eb)
+    if eb.ggEdit then return end
+    eb.ggEdit = true
+    FadeTextures(eb)
+    for _, k in ipairs({ "Left", "Right", "Middle", "Mid" }) do
+        if eb[k] and eb[k].SetAlpha then eb[k]:SetAlpha(0) end
+    end
+    Solid(eb, "BACKGROUND", { 0.02, 0.02, 0.02, 1 }):SetAllPoints()
+    FlatBorder(eb, BORDER)
+    flat.Font(eb)
+end
+
+-- Close (X) glyph button.
+function Style.CloseButton(btn) Request("CloseButton", btn) end
+function skin.CloseButton(btn) S.CloseButton(btn) end
+function flat.CloseButton(btn)
+    if btn.ggClose then return end
+    btn:SetNormalTexture("")
+    btn:SetPushedTexture("")
+    btn:SetHighlightTexture("")
+    btn:SetDisabledTexture("")
+    FadeTextures(btn)
+    local x = btn:CreateTexture(nil, "OVERLAY")
+    x:SetAtlas("uitools-icon-close")
+    x:SetSize(14, 14)
+    x:SetPoint("CENTER", -2, 0)
+    x:SetVertexColor(1, 1, 1, 0.75)
+    btn.ggClose = x
+    btn:HookScript("OnEnter", function() x:SetVertexColor(1, 1, 1, 1) end)
+    btn:HookScript("OnLeave", function() x:SetVertexColor(1, 1, 1, 0.75) end)
+end
+
+-------------------------------------------------------------------------------
+-- Tabs. A tab is a Button with a .Text label and a .tabID; its parent carries
+-- .selectedTabID. Style.SelectTab(parent, tabID) switches the active tab.
+-------------------------------------------------------------------------------
+local function TabParent(tab)
+    local parent = tab:GetParent()
+    if parent and not parent.SetTabVisuallySelected then
+        -- EllesmereUI hooks this to refresh its tab visuals; the flat painter
+        -- refreshes from Style.SelectTab.
+        parent.SetTabVisuallySelected = function() end
+        parent.ggTabs = {}
+    end
+    if parent and parent.ggTabs and not tab.ggRegistered then
+        tab.ggRegistered = true
+        table.insert(parent.ggTabs, tab)
+    end
+    return parent
+end
+
+local function UpdateFlatTab(tab)
+    local parent = tab:GetParent()
+    local sel = parent and parent.selectedTabID ~= nil and parent.selectedTabID == tab.tabID
+    if tab.Text then tab.Text:SetAlpha(sel and 1 or 0.5) end
+    if tab.ggUnderline then
+        local r, g, b = Style.Accent()
+        tab.ggUnderline:SetColorTexture(r, g, b, 1)
+        tab.ggUnderline:SetShown(sel and true or false)
+    end
+end
+
+function Style.Tab(tab) Request("Tab", tab) end
+function skin.Tab(tab)
+    TabParent(tab)
+    S.Tab(tab)
+end
+function flat.Tab(tab)
+    TabParent(tab)
+    if tab.ggTab then UpdateFlatTab(tab); return end
+    tab.ggTab = true
+    FadeTextures(tab, { [tab.Text or false] = true })
+    local hl = tab:GetHighlightTexture()
+    if hl then hl:SetTexture("") end
+    Solid(tab, "BACKGROUND", TAB_BG):SetAllPoints()
+    Solid(tab, "HIGHLIGHT", { 1, 1, 1, 0.06 }):SetAllPoints()
+    local underline = tab:CreateTexture(nil, "OVERLAY", nil, 6)
+    Crisp(underline)
+    underline:SetHeight(1)
+    underline:SetPoint("BOTTOMLEFT")
+    underline:SetPoint("BOTTOMRIGHT")
+    tab.ggUnderline = underline
+    if tab.Text then
+        flat.Font(tab.Text)
+        tab.Text:SetTextColor(1, 1, 1)
+    end
+    UpdateFlatTab(tab)
+end
+
+function Style.SelectTab(parent, tabID)
+    parent.selectedTabID = tabID
+    if not parent.ggTabs then return end
+    for _, tab in ipairs(parent.ggTabs) do
+        if Style.mode ~= "skin" then UpdateFlatTab(tab) end
+        if tab.tabID == tabID then parent:SetTabVisuallySelected(tab) end
+    end
+end
+
+Style.OnLooksChanged(function()
+    if Style.mode == "skin" then return end
+    for _, entry in ipairs(entries) do
+        if entry.kind == "Tab" then UpdateFlatTab(entry.args[1]) end
+    end
+end)
+
+-------------------------------------------------------------------------------
+-- Check buttons (UICheckButtonTemplate)
+-------------------------------------------------------------------------------
+function Style.Checkbox(cb) Request("Checkbox", cb) end
+function skin.Checkbox(cb) S.Checkbox(cb, { borderInset = 4 }) end
+function flat.Checkbox(cb)
+    if cb.ggCheck then return end
+    cb.ggCheck = true
+    cb:SetNormalTexture("")
+    cb:SetPushedTexture("")
+    cb:SetHighlightTexture("")
+    local checked, dchecked = cb:GetCheckedTexture(), cb:GetDisabledCheckedTexture()
+    FadeTextures(cb, { [checked or false] = true, [dchecked or false] = true })
+    local fill = Solid(cb, "BACKGROUND", { 0.02, 0.02, 0.02, 1 })
+    fill:SetPoint("TOPLEFT", 4, -4)
+    fill:SetPoint("BOTTOMRIGHT", -4, 4)
+    local bh = CreateFrame("Frame", nil, cb)
+    bh:SetPoint("TOPLEFT", 4, -4)
+    bh:SetPoint("BOTTOMRIGHT", -4, 4)
+    bh:SetFrameLevel(cb:GetFrameLevel() + 1)
+    FlatBorder(bh, { 0.25, 0.25, 0.25, 1 })
+    if checked then
+        local r, g, b = Style.Accent()
+        checked:SetVertexColor(r, g, b, 1)
+    end
+end
+
+-------------------------------------------------------------------------------
+-- Scroll frames (MinimalScrollBar with a slim thumb)
+-------------------------------------------------------------------------------
+function Style.ScrollBar(sb) Request("ScrollBar", sb) end
+function skin.ScrollBar(sb) S.ScrollBar(sb) end
+function flat.ScrollBar(sb)
+    if sb.ggScroll then return end
+    sb.ggScroll = true
+    for _, k in ipairs({ "Back", "Forward" }) do
+        if sb[k] then
+            FadeTextures(sb[k])
+            if sb[k].Texture then sb[k].Texture:SetAlpha(0) end
+        end
+    end
+    if sb.Track then FadeTextures(sb.Track) end
+    local thumb = (sb.Track and sb.Track.Thumb) or (sb.GetThumb and sb:GetThumb())
+    if thumb then
+        FadeTextures(thumb)
+        local t = Solid(thumb, "ARTWORK", { 1, 1, 1, 0.3 })
+        t:SetPoint("TOP"); t:SetPoint("BOTTOM"); t:SetWidth(4)
+    end
+end
+
+-- A scroll frame plus bar inside `parent`; the caller anchors the scroll
+-- frame. Returns scrollFrame, scrollBar, content. The bar sits in a gutter on
+-- the scroll frame's right.
+function Style.ScrollFrame(parent, width)
+    local sf = CreateFrame("ScrollFrame", nil, parent)
+    local sb = CreateFrame("EventFrame", nil, parent, "MinimalScrollBar")
+    sb:SetPoint("TOPLEFT", sf, "TOPRIGHT", 2, 0)
+    sb:SetPoint("BOTTOMLEFT", sf, "BOTTOMRIGHT", 2, 0)
+    sb:SetWidth(8)
+    ScrollUtil.InitScrollFrameWithScrollBar(sf, sb)
+    sf:EnableMouseWheel(true)
+    local content = CreateFrame("Frame", nil, sf)
+    content:SetSize(width or 100, 10)
+    sf:SetScrollChild(content)
+    sf:SetScript("OnSizeChanged", function(_, w) content:SetWidth(w) end)
+    Style.ScrollBar(sb)
+    return sf, sb, content
+end
+
+-------------------------------------------------------------------------------
+-- Icons and bars
+-------------------------------------------------------------------------------
+-- Crops the baked bevel off an icon; with `parent` also draws a 1px black frame.
+function Style.SquareIcon(tex, parent)
+    tex:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+    if parent and not tex.ggBacking then
+        local back = parent:CreateTexture(nil, "BACKGROUND", nil, 1)
+        back:SetColorTexture(0, 0, 0, 1)
+        back:SetPoint("TOPLEFT", tex, "TOPLEFT", -1, 1)
+        back:SetPoint("BOTTOMRIGHT", tex, "BOTTOMRIGHT", 1, -1)
+        tex.ggBacking = back
+    end
+end
+
+function Style.BarFill(bar) Request("BarFill", bar) end
+function skin.BarFill(bar) S.ApplyBarFill(bar) end
+function flat.BarFill(bar)
+    local r, g, b = Style.Accent()
+    bar:SetStatusBarColor(r * 0.8, g * 0.8, b * 0.8, 0.95)
+end
+
+-- The first atlas from the list that exists on this client, or nil.
+function Style.FindAtlas(names)
+    for _, name in ipairs(names) do
+        if C_Texture.GetAtlasInfo(name) then return name end
+    end
+    return nil
+end
+
+-------------------------------------------------------------------------------
+-- Registration
+-------------------------------------------------------------------------------
+if EllesmereUI and EllesmereUI.RegisterSkin then
+    EllesmereUI.RegisterSkin("GoldGoal", function(facade) Style.Finalize("skin", facade) end)
+end
+
+-- EllesmereUI dispatches skin callbacks at PLAYER_LOGIN, before this runs.
+-- Anything still undecided one frame later gets the flat look.
+ns:On("LOGIN", function()
+    C_Timer.After(0, function()
+        if not Style.mode then Style.Finalize("flat") end
+    end)
+end)
