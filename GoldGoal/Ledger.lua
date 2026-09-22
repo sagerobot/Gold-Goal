@@ -29,19 +29,34 @@ local function SecondsUntil(fn)
     return nil
 end
 
+-- Both resets are asked for over and over inside one refresh: every
+-- projection reads the day and week ids half a dozen times, and a single
+-- gain refreshes the bar, the broker, the window and the splash. Neither
+-- reset can move within a second, so each keeps its last answer and the
+-- protected API call behind it runs once a second instead of sixty times
+-- a gain.
+local dailyFor, dailyAt, weeklyFor, weeklyAt
+
 local function NextDailyReset(now)
+    if dailyFor == now then return dailyAt end
     local secs = SecondsUntil("GetSecondsUntilDailyReset")
-    if secs then return now + secs end
-    return (math.floor(now / DAY) + 1) * DAY -- UTC midnight without the API
+    -- UTC midnight without the API
+    dailyFor, dailyAt = now, secs and (now + secs) or ((math.floor(now / DAY) + 1) * DAY)
+    return dailyAt
 end
 
 local function NextWeeklyReset(now)
+    if weeklyFor == now then return weeklyAt end
     local secs = SecondsUntil("GetSecondsUntilWeeklyReset")
-    if secs then return now + secs end
-    -- Tuesday 15:00 UTC without the API; day 0 of the epoch was a Thursday
-    local week = 7 * DAY
-    local anchor = 5 * DAY + 15 * 3600
-    return math.floor((now - anchor) / week + 1) * week + anchor
+    if secs then
+        weeklyFor, weeklyAt = now, now + secs
+    else
+        -- Tuesday 15:00 UTC without the API; day 0 of the epoch was a Thursday
+        local week = 7 * DAY
+        local anchor = 5 * DAY + 15 * 3600
+        weeklyFor, weeklyAt = now, math.floor((now - anchor) / week + 1) * week + anchor
+    end
+    return weeklyAt
 end
 
 function ns:DayID(now)
@@ -217,12 +232,19 @@ local function Prune(store, floor)
 end
 
 -- baselineDelta: the part of any change since the last observation that is
--- not income (see the top of the file).
-function ns:Touch(baselineDelta)
+-- not income (see the top of the file); craftingBaseline, the part of that
+-- which is crafting stock (a first reading, a reset, the setting toggled).
+-- EARNED carries the income and its split: the gold that moved and the
+-- stock that moved at cost, so a sale's gross and cost can be told apart.
+function ns:Touch(baselineDelta, craftingBaseline)
     if not self.db then return end
+    self:Invalidate()
     local db, now = self.db, time()
     baselineDelta = baselineDelta or 0
     local total = self:TotalWealth()
+    local crafting = self.CraftingAtCost and self:CraftingAtCost() or 0
+    local craftingEarned = self.lastCrafting and (crafting - self.lastCrafting - (craftingBaseline or 0)) or 0
+    self.lastCrafting = crafting
     local dayID, weekID = self:DayID(now), self:WeekID(now)
     if not db.goalStart then
         db.goalStart, db.goalStartDay = now, dayID
@@ -243,7 +265,7 @@ function ns:Touch(baselineDelta)
     end
     local week = db.weeks[weekID]
     if not week then
-        week = { start = carry, last = total }
+        week = { start = carry, last = total, firstDay = dayID }
         db.weeks[weekID] = week
         Prune(db.weeks, weekID - 7 * KEEP_WEEKS)
     else
@@ -255,7 +277,7 @@ function ns:Touch(baselineDelta)
     if self.AutoAdvanceTier then self:AutoAdvanceTier(total) end
     self:RefreshQuotas(now)
     self:Fire("WEALTH_CHANGED")
-    if earned ~= 0 then self:Fire("EARNED", earned) end
+    if earned ~= 0 or craftingEarned ~= 0 then self:Fire("EARNED", earned, earned - craftingEarned, craftingEarned) end
 end
 
 -- Fills in characters Syndicator knows that this addon has not seen yet,
@@ -295,6 +317,26 @@ function ns:Earned(dayID)
     return d and (d.last - d.start) or 0
 end
 
+-- Everything earned between two day ids, both included. A day with no
+-- record earned nothing, so a span wider than the history worth keeping
+-- (a goal started last year) walks the days that exist rather than every
+-- id in between.
+local function SumDays(days, first, last)
+    local sum = 0
+    if last < first then return sum end
+    if last - first > KEEP_DAYS then
+        for id, d in pairs(days) do
+            if id >= first and id <= last then sum = sum + (d.last - d.start) end
+        end
+    else
+        for id = first, last do
+            local d = days[id]
+            if d then sum = sum + (d.last - d.start) end
+        end
+    end
+    return sum
+end
+
 function ns:TodayEarned()
     return self:Earned(self:DayID())
 end
@@ -302,6 +344,16 @@ end
 function ns:WeekEarned()
     local w = self.db.weeks[self:WeekID()]
     return w and (w.last - w.start) or 0
+end
+
+-- The first day seen in a week, for week records saved before they kept
+-- it: the earliest day record that names the week.
+function ns:FirstDayOfWeek(weekID)
+    local first
+    for id, d in pairs(self.db.days) do
+        if d.week == weekID and (not first or id < first) then first = id end
+    end
+    return first
 end
 
 function ns:DailyQuota()
@@ -343,30 +395,22 @@ end
 function ns:Average(n)
     local today = self:DayID()
     local first = math.max(today - n, self.db.goalStartDay or today)
-    local count, sum = 0, 0
-    for id = first, today - 1 do
-        sum = sum + self:Earned(id)
-        count = count + 1
-    end
-    if count == 0 then return self:Earned(today) end
-    return sum / count
+    local count = today - first
+    if count <= 0 then return self:Earned(today) end
+    return SumDays(self.db.days, first, today - 1) / count
 end
 
 function ns:AverageSinceStart()
     local today = self:DayID()
     local first = self.db.goalStartDay or today
     if first >= today then return self:Earned(today) end
-    local sum = 0
-    for id = first, today - 1 do sum = sum + self:Earned(id) end
-    return sum / (today - first)
+    return SumDays(self.db.days, first, today - 1) / (today - first)
 end
 
 -- Everything earned since the goal started, today included.
 function ns:SavedSinceStart()
     local today = self:DayID()
-    local sum = 0
-    for id = (self.db.goalStartDay or today), today do sum = sum + self:Earned(id) end
-    return sum
+    return SumDays(self.db.days, self.db.goalStartDay or today, today)
 end
 
 -------------------------------------------------------------------------------

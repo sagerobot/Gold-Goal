@@ -1,21 +1,38 @@
 -- GoldGoal: the gold splash. A combat-text style pop in the middle of the
 -- screen whenever the total grows by more than a threshold, bigger and
 -- louder the more it is. Gains are merged: everything that arrives within
--- a quiet window is one event, and while the mailbox is open nothing shows
--- until it closes, so a run through fifty sale mails is one big number.
+-- a quiet window is one event.
 -- The amount is the net change in what the addon counts, so with
--- CraftSimPL a sale shows its profit and a reagent buy shows nothing.
+-- CraftSimPL a sale shows its profit and a reagent buy shows nothing. A
+-- sale (gold in while stock leaves at cost, the mailbox mostly) shows
+-- however small it is, with its margin on cost under the amount.
+--
+-- In the shops -- the auction house, vendors, the mailbox, the profession
+-- window, crafting orders -- gold is mostly only moving around: reagents
+-- out, the same gold back as sale mail. By default what moves in there is
+-- counted but never celebrated (db.splash.shops == "quiet"). A window on
+-- screen is what counts as open; the events are only a fallback for the
+-- ones whose frame is not loaded.
+--
+-- Crafting itself moves no gold at all: a batch whose gold did not budge
+-- while the stock did is CraftSimPL revaluing the position, and that is
+-- never income, whatever window is open and whatever the shop rule says.
+--
+-- A goal banked, the day's quota met and a sale's profit still show
+-- through either rule; a percent mark is kept for the next gain out in
+-- the world rather than eaten.
 --
 -- Every level is the user's (db.splash.levels, up to SPLASH_MAX_LEVELS):
 -- the gold it starts at, what it says, its text size and hold time, its
 -- sound, colour, glow and frame. So are how often the percent marks fire,
--- the celebrations, losses, the mailbox hold and the bar's hide rules.
+-- the celebrations, losses, the shop rule and the bar's hide rules.
 local _, ns = ...
 local Style = ns.Style
 
 local frame, vignette
 local pending, count, lastAt, armed = 0, 0, 0, false
-local mailOpen = false
+local pendingGold, pendingStock = 0, 0 -- the split of `pending`: gold moved, and stock moved at cost
+local pendingQuiet = nil               -- the shop window that was open when part of `pending` arrived
 
 ns.SPLASH_MAX_LEVELS = 10
 
@@ -41,6 +58,36 @@ ns.SPLASH_LEVEL_DEFAULTS = {
     { gold = 50000 * 10000,  flavor = "Jackpot!",   size = 60, hold = 2.5, sound = "epic",      glow = true,  frame = "gold",   color = "gold" },
     { gold = 100000 * 10000, flavor = "Legendary!", size = 66, hold = 2.5, sound = "legendary", glow = true,  frame = "liquid", color = "gold" },
 }
+
+-- The windows where gold is mostly only moving around: reagents bought,
+-- crafts posted, the same gold back as sale mail. `frame` is the global
+-- the hold is checked against when an open event is not followed by its
+-- close; the load-on-demand ones are nil until first use, which reads as
+-- "cannot tell" and is left alone. Player-to-player trade is deliberately
+-- absent: that is real income and should splash.
+-- A window on screen is the signal that matters; the events are a
+-- fallback for the ones whose frame is not loaded (or is named something
+-- we do not know). Relying on the events alone fails silently when a
+-- client stops sending one, which is exactly the bug you cannot see.
+local SHOPS = {
+    { key = "mail",     name = "the mailbox",           open = "MAIL_SHOW",                    close = "MAIL_CLOSED",
+      frames = { "MailFrame", "OpenMailFrame" } },
+    { key = "merchant", name = "a vendor",              open = "MERCHANT_SHOW",                close = "MERCHANT_CLOSED",
+      frames = { "MerchantFrame" } },
+    { key = "auction",  name = "the auction house",     open = "AUCTION_HOUSE_SHOW",           close = "AUCTION_HOUSE_CLOSED",
+      frames = { "AuctionHouseFrame", "AuctionFrame" } },
+    { key = "trade",    name = "the profession window", open = "TRADE_SKILL_SHOW",             close = "TRADE_SKILL_CLOSE",
+      frames = { "ProfessionsFrame", "TradeSkillFrame", "ProfessionsBookFrame" } },
+    { key = "orders",   name = "crafting orders",       open = "CRAFTINGORDERS_SHOW_CUSTOMER", close = "CRAFTINGORDERS_HIDE_CUSTOMER",
+      frames = { "ProfessionsCustomerOrdersFrame" } },
+    { key = "crafter",  name = "crafting orders",       open = "CRAFTINGORDERS_SHOW_CRAFTER",  close = "CRAFTINGORDERS_HIDE_CRAFTER",
+      frames = { "ProfessionsFrame" } },
+}
+local shopOpen = {}     -- [key] = the SHOPS entry, while its window is up
+
+-- What happens to gold that moves while one of them is open.
+ns.SPLASH_SHOP_MODES = { quiet = "Stay quiet", merge = "One number when you leave", show = "Show as it happens" }
+ns.SPLASH_SHOP_ORDER = { "quiet", "merge", "show" }
 
 -- The frame around the screen a level can light: liquid gold flowing
 -- along the edges, at three strengths. (The keys are older than the
@@ -402,6 +449,24 @@ function ns:PreviewSplash(level)
     self:ShowSplash(levels[level].gold, { level = level })
 end
 
+-- The line under a sale's profit: "43% profit on 830g at cost", or the
+-- loss. The percent is the margin on what the stock cost.
+function ns.ProfitLine(profit, cost)
+    local atCost = ns.FormatGold(cost) .. " at cost"
+    if profit == 0 then return "no profit on " .. atCost end
+    local pct = math.abs(profit) / cost * 100
+    local text = pct < 1 and "<1%" or string.format("%d%%", math.floor(pct + 0.5))
+    return string.format("%s %s on %s", text, profit > 0 and "profit" or "loss", atCost)
+end
+
+-- A sample sale, for /gg splash profit.
+function ns:PreviewProfitSplash()
+    local cost = 830 * 10000
+    local profit = 357 * 10000
+    self:ShowSplash(profit, { subtitle = ns.ProfitLine(profit, cost), level = self:SplashLevel(profit),
+        progress = self.db.splash.progress ~= false and self:ProgressLine(self:Projection(), profit) or nil })
+end
+
 -------------------------------------------------------------------------------
 -- Merging
 -------------------------------------------------------------------------------
@@ -456,6 +521,53 @@ local function Log(kind, amount, note)
     while #log > 24 do table.remove(log) end
 end
 
+-- Whether a shop window is open, pruning any whose frame says otherwise:
+-- a missed close event would otherwise keep the splash quiet for the rest
+-- of the session. Called on every gain and every flush, not only from the
+-- armed timer, so a stale hold is caught at the next thing that happens.
+-- Returns the name of one open window, or nil.
+-- true when one of a context's frames is on screen, false when they are
+-- loaded and none is, nil when none is loaded yet and we cannot tell.
+local function ShopVisible(def)
+    local known
+    for _, name in ipairs(def.frames) do
+        local f = _G[name]
+        if type(f) == "table" and f.IsShown then
+            known = true
+            if f:IsShown() then return true end
+        end
+    end
+    if known then return false end
+    return nil -- nothing loaded: we cannot tell, so the event has the say
+end
+
+local function ShopOpen()
+    local name
+    for _, def in ipairs(SHOPS) do
+        local vis = ShopVisible(def)
+        if vis then
+            -- on screen: open, whether or not its event ever reached us
+            if not shopOpen[def.key] then
+                shopOpen[def.key] = def
+                Log("shop", nil, def.name .. " is up (seen on screen, no event needed)")
+            end
+            name = name or def.name
+        elseif vis == false and shopOpen[def.key] then
+            -- loaded and not shown: a close event went missing
+            shopOpen[def.key] = nil
+            Log("shop", nil, def.name .. ": the hold was stale, released")
+        elseif shopOpen[def.key] then
+            name = name or def.name -- held by its event; no frame to check
+        end
+    end
+    return name
+end
+
+-- "quiet" | "merge" | "show": what to do with gold that moves in there.
+local function ShopMode()
+    return ns.db and ns.db.splash.shops or "quiet"
+end
+
 function ns:PrintSplashLog()
     self:Print("Gold splash, this session (newest first):")
     local log = self.splashLog or {}
@@ -463,47 +575,87 @@ function ns:PrintSplashLog()
     for _, l in ipairs(log) do
         print(string.format("  %s  %-8s %14s  %s", date("%H:%M:%S", l.at), l.kind, l.amount and self.StripColor(self.FormatSigned(l.amount)) or "", l.note or ""))
     end
-    print(string.format("  now: pending %s in %d change(s), mailbox %s, level 1 from %s, splash %s",
-        self.StripColor(self.FormatSigned(pending)), count, mailOpen and "held open" or "closed", self.FormatGold(self:SplashThreshold()),
-        self.db.splash.enabled and "on" or "OFF"))
-end
-
--- The mailbox hold can only be trusted while the mail frame is really up.
-local function MailboxStillOpen()
-    if not mailOpen then return false end
-    if MailFrame and MailFrame.IsShown and not MailFrame:IsShown() then
-        mailOpen = false
-        Log("mail", nil, "the hold was stale: mail frame not shown, released")
-    end
-    return mailOpen
+    local where, mode = ShopOpen(), ShopMode()
+    print(string.format("  now: pending %s in %d change(s), in the shops %q%s, level 1 from %s, splash %s",
+        self.StripColor(self.FormatSigned(pending)), count, mode,
+        where and (" (" .. where .. " open" .. (pendingQuiet and ", this batch will be dropped" or "") .. ")") or "",
+        self.FormatGold(self:SplashThreshold()), self.db.splash.enabled and "on" or "OFF"))
 end
 
 local function Flush()
-    local amount, n = pending, count
-    pending, count = 0, 0
+    local amount, n, gold, stock = pending, count, pendingGold, pendingStock
+    local where = pendingQuiet
+    ShopOpen() -- prune any hold the window itself says is stale
+    pending, count, pendingGold, pendingStock, pendingQuiet = 0, 0, 0, 0, nil
     if n == 0 then return end
     if Suppressed() then Log("flush", amount, "kept quiet: the bar's hide rules apply"); return end
     local db = ns.db
     local cfg = db.splash
+    local quiet = where and ShopMode() == "quiet"
     local threshold = ns:SplashThreshold()
     local p = ns:Projection()
     local tierName = "Goal"
     local subtitle, level, title
     local banked = cfg.celebrateBanked ~= false and NewlyBanked(p) or nil
+    -- the day's quota, met for the first time today
+    local day = db.days[ns:DayID()]
+    local quotaMet = not banked and cfg.celebrateQuota ~= false and day and day.quota
+        and day.quota > 0 and p.today >= day.quota and not day.met or false
+    if quotaMet then day.met = true end
+    -- a sale: gold came in while stock left at cost. It shows whatever
+    -- the size, as its profit (or loss) with the margin on cost.
+    local cost = -stock
+    local sale = cfg.profit ~= false and cost > 0 and gold > 0
+    -- Crafting moves no gold: reagents become crafts and CraftSimPL values
+    -- the two a little differently, so the position is worth more (or
+    -- less) with nothing bought or sold. That is a revaluation, never
+    -- income, so it is never celebrated -- whatever window is open, and
+    -- whatever the shop rule says. Without CraftSimPL stock is always 0
+    -- and this can never fire.
+    local revalued = gold == 0 and stock ~= 0
+    -- Gold that only moved around in a shop is not celebrated. The two
+    -- once-only moments would be lost for good, so they still show (as
+    -- the moment alone, without the misleading amount), and a sale shows
+    -- its profit, which is the honest number. CrossedMark is deliberately
+    -- not called: the percent mark keeps for the next gain out in the world.
+    if quiet or revalued then
+        if banked then
+            -- the moment on its own: the amount is mostly gold coming back
+            ns:ShowSplash(0, { title = banked .. " banked!", subtitle = "", level = #ns:SplashLevels() })
+            Log("flush", amount, "quiet: only the banked goal showed")
+        elseif quotaMet then
+            ns:ShowSplash(0, { title = "Daily quota met!", subtitle = "", level = LevelAtMost(2) })
+            Log("flush", amount, "quiet: only the quota showed")
+        elseif sale then
+            subtitle = ns.ProfitLine(amount, cost)
+            ns:ShowSplash(amount, { subtitle = subtitle, loss = amount < 0 or nil,
+                progress = cfg.progress ~= false and ns:ProgressLine(p, amount) or nil })
+            Log("flush", amount, "a sale, shown through the quiet: " .. subtitle)
+        elseif quiet then
+            Log("flush", amount, "quiet: " .. where .. " open")
+        else
+            Log("flush", amount, "crafting revalued the stock, no gold moved: not income")
+        end
+        return
+    end
     local mark = cfg.marks ~= false and CrossedMark(p) or nil
     if banked then
         subtitle, level = banked .. " banked!", #ns:SplashLevels()
-    else
-        local day = db.days[ns:DayID()]
-        if cfg.celebrateQuota ~= false and day and day.quota and day.quota > 0 and p.today >= day.quota and not day.met then
-            day.met = true
-            subtitle = "Daily quota met!"
-            level = math.max(LevelAtMost(2), ns:SplashLevel(amount))
-        elseif mark then
-            local big = math.max(1, cfg.markBigEvery or 10)
-            subtitle = mark .. "% of " .. tierName
-            level = math.max(mark % big == 0 and LevelAtMost(3) or 1, ns:SplashLevel(amount))
+    elseif quotaMet then
+        subtitle = "Daily quota met!"
+        level = math.max(LevelAtMost(2), ns:SplashLevel(amount))
+    elseif sale then
+        subtitle = ns.ProfitLine(amount, cost)
+        level = ns:SplashLevel(amount)
+        if amount < 0 then
+            ns:ShowSplash(amount, { loss = true, subtitle = subtitle, progress = cfg.progress ~= false and ns:ProgressLine(p, amount) or nil })
+            Log("flush", amount, "a sale at a loss: " .. subtitle)
+            return
         end
+    elseif mark then
+        local big = math.max(1, cfg.markBigEvery or 10)
+        subtitle = mark .. "% of " .. tierName
+        level = math.max(mark % big == 0 and LevelAtMost(3) or 1, ns:SplashLevel(amount))
     end
     -- a loss: only when asked for, and only past the threshold
     if not subtitle and amount < 0 then
@@ -544,37 +696,66 @@ local function Arm()
     local merge = ns.db.splash.merge or 2
     C_Timer.After(merge, function()
         armed = false
-        if MailboxStillOpen() then Log("hold", pending, "held: the mailbox is open"); return end
+        -- only "merge" holds; "quiet" flushes on time and drops it there,
+        -- so a close event that never arrives cannot silence the session
+        if ShopMode() == "merge" then
+            local where = ShopOpen()
+            if where then
+                Log("hold", pending, "held: " .. where .. " is open")
+                if count > 0 then Arm() end -- keep the stale check running
+                return
+            end
+        end
         if Now() - lastAt >= merge - 0.05 then SafeFlush() else Arm() end
     end)
 end
 
-function ns:SplashEarned(delta)
-    if not self.db or delta == 0 then return end
+-- delta is the income; gold and stock its split (the gold that moved and
+-- the stock that moved at cost), both optional.
+function ns:SplashEarned(delta, gold, stock)
+    if not self.db or (delta == 0 and (stock or 0) == 0) then return end
     if not self.db.splash.enabled then Log("earned", delta, "splash is off"); return end
+    local where, mode = ShopOpen(), ShopMode()
     pending = pending + delta
+    pendingGold = pendingGold + (gold or delta)
+    pendingStock = pendingStock + (stock or 0)
+    if where and mode == "quiet" then pendingQuiet = where end
     count = count + 1
     lastAt = Now()
-    Log("earned", delta, MailboxStillOpen() and "mailbox open, holding" or nil)
-    if not mailOpen then Arm() end
+    Log("earned", delta, where and (where .. " open, " .. (mode == "merge" and "holding" or mode == "quiet" and "will be dropped" or "shown anyway")) or nil)
+    if not (where and mode == "merge") then Arm() end
 end
 
+-- The batch waiting: how much, in how many changes, and what is open.
 function ns:SplashPending()
-    return pending, count, mailOpen
+    return pending, count, ShopOpen()
 end
 
-ns:On("EARNED", function(delta) ns:SplashEarned(delta) end)
+ns:On("EARNED", function(delta, gold, stock) ns:SplashEarned(delta, gold, stock) end)
 ns:On("LOGIN", function()
     BuildFrame()
     ns:AnchorSplash()
-    ns:RegisterEvent("MAIL_SHOW", function()
-        mailOpen = ns.db.splash.holdMail ~= false
-        Log("mail", nil, mailOpen and "opened: holding gains" or "opened (hold is off)")
-    end)
-    ns:RegisterEvent("MAIL_CLOSED", function()
-        mailOpen = false
-        Log("mail", pending, "closed")
-        if count > 0 then lastAt = Now(); Arm() end
-    end)
+    for _, def in ipairs(SHOPS) do
+        ns:RegisterEvent(def.open, function()
+            shopOpen[def.key] = def
+            Log("shop", nil, def.name .. " opened")
+        end)
+        ns:RegisterEvent(def.close, function()
+            shopOpen[def.key] = nil
+            Log("shop", pending, def.name .. " closed")
+            if count > 0 and not ShopOpen() then lastAt = Now(); Arm() end
+        end)
+    end
+end)
+-- Every window closes on a loading screen, and a close event can go
+-- missing. Registered at load, not on LOGIN: the ledger registers its own
+-- PLAYER_ENTERING_WORLD then (Ledger.lua), and handlers run in the order
+-- they were added, so this has to clear the holds before the gold it
+-- observes arrives here.
+ns:RegisterEvent("PLAYER_ENTERING_WORLD", function()
+    if next(shopOpen) then
+        wipe(shopOpen)
+        Log("shop", nil, "a loading screen closed everything")
+    end
 end)
 ns:On("SETTINGS_CHANGED", function() ns:AnchorSplash() end)

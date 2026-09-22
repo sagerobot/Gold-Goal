@@ -286,7 +286,7 @@ print("Login")
 -- a saved file from before the tier ladder: migrated to it, and to the expansion deadline
 _G.GoldGoalDB = { targetPreset = "mount", target = 5000000 * C, deadlinePreset = "season", deadline = 123 }
 Fire("ADDON_LOADED", "GoldGoal")
-check(ns.db and ns.db.target == 5000000 * C and ns.db.targetPreset == "ladder" and #ns.db.tiers == 3 and ns.db.tierIndex == 1 and ns.db.schema == 3, "old settings migrated to the 5/7/10 ladder, pacing the mount")
+check(ns.db and ns.db.target == 5000000 * C and ns.db.targetPreset == "ladder" and #ns.db.tiers == 3 and ns.db.tierIndex == 1 and ns.db.schema == 4, "old settings migrated to the 5/7/10 ladder, pacing the mount")
 check(ns.db.deadlinePreset == "expansion" and ns.db.deadline ~= 123 and ns:DeadlineText(true) == "Aug 01, 2027", "season guess became the expansion-end guess: " .. tostring(ns:DeadlineText(true)))
 check(ns.db.deadlineGuess == ns.EXPANSION_END_GUESS, "the guess used is remembered")
 Fire("PLAYER_LOGIN")
@@ -364,7 +364,7 @@ MONEY = MONEY + 1000000 * C
 Fire("PLAYER_MONEY")
 check(ns:TodayEarned() == 1020000 * C, "a big farm day")
 check(ns:TomorrowQuota() < ns:DailyQuota(), "the big day lowers tomorrow's quota: " .. ns.FormatGold(ns:TomorrowQuota()) .. " < " .. ns.FormatGold(ns:DailyQuota()))
-local expectedTomorrow = ns:TomorrowQuota()
+local expectedTomorrow, expectedWeek = ns:TomorrowQuota(), ns:WeeklyQuota()
 Advance(6 * 3600) -- past the 15:00 reset
 MONEY = MONEY + 5000 * C
 Fire("PLAYER_MONEY") -- the first thing seen on the new day
@@ -373,6 +373,11 @@ check(ns:TodayEarned() == 5000 * C, "earnings straight after the reset land on t
 check(ns:Earned(D0) == 1020000 * C, "yesterday keeps its earnings")
 check(ns:DaysLeft() == 9, "one day fewer")
 check(near(ns:DailyQuota(), expectedTomorrow), "the new day's quota is yesterday's tomorrow figure")
+check(near(ns:WeeklyQuota(), expectedWeek) and ns.db.weeks[ns:WeekID()].days == weekDays, "the week's quota holds still after the day turns (" .. ns.FormatGold(ns:WeeklyQuota()) .. ")")
+ns.db.weeks[ns:WeekID()].firstDay = nil
+ns:RefreshQuotas()
+check(near(ns:WeeklyQuota(), expectedWeek) and ns.db.weeks[ns:WeekID()].days == weekDays, "a week saved without its first day finds it from the day records")
+ns.db.weeks[ns:WeekID()].firstDay = D0
 check(near(ns:WeekEarned(), 1025000 * C), "the week carries on across the day")
 Advance(7 * DAY) -- an idle week
 Tick()
@@ -465,6 +470,13 @@ ns:HideWindow()
 check(not ns:IsWindowShown(), "window hidden")
 ns:ShowPage("settings")
 ns:ShowWindow()
+ns:RefreshSettings()
+local sp = GoldGoalFrame.Pages.settings
+check(sp.ShopTabs and sp.ShopTabs.selectedTabID == "quiet", "Settings: the shop rule reads the setting")
+ns.db.splash.shops = "show"
+ns:RefreshSettings()
+check(sp.ShopTabs.selectedTabID == "show", "Settings: and follows it when it changes")
+ns.db.splash.shops = "quiet"
 ns:RefreshSettings()
 
 print("Bar and broker")
@@ -653,7 +665,8 @@ check(ns:SetDeadlineDate("2027-03-01") and ns.db.deadlineGuess == nil, "a typed 
 ns:HideWindow()
 
 print("Combat and the gold splash")
-check(ns.db.bar.hideInCombat == true and ns.db.splash.enabled == true and ns.db.splash.threshold == 500 * C, "defaults: the bar hides in combat, the splash shows from 500g")
+check(ns.db.bar.hideInCombat == true and ns.db.splash.enabled == true and ns.db.splash.threshold == 500 * C and ns.db.splash.shops == "quiet",
+    "defaults: the bar hides in combat, the splash shows from 500g, and the shops are quiet")
 ns:SetBarShown(true)
 IN_COMBAT = true
 Fire("PLAYER_REGEN_DISABLED")
@@ -716,8 +729,14 @@ ns:RefreshBar()
 check(ns.Bar:IsShown(), "grouped in the open world keeps it (world quests with friends)")
 IN_GROUP = false
 _G.GoldGoalDB.schema, _G.GoldGoalDB.bar.instanceMode = 2, "group"
+_G.GoldGoalDB.splash.shops, _G.GoldGoalDB.splash.holdMail = nil, true
 Fire("ADDON_LOADED", "GoldGoal")
-check(ns.db.bar.instanceMode == "smart" and ns.db.schema == 3, "an earlier grouped default migrates to smart")
+check(ns.db.bar.instanceMode == "smart" and ns.db.schema == 4, "an earlier grouped default migrates to smart")
+check(ns.db.splash.shops == "quiet" and ns.db.splash.holdMail == nil, "and the mailbox hold becomes the shop rule, quiet by default")
+_G.GoldGoalDB.schema, _G.GoldGoalDB.splash.shops, _G.GoldGoalDB.splash.holdMail = 3, nil, false
+Fire("ADDON_LOADED", "GoldGoal")
+check(ns.db.splash.shops == "show" and ns.db.splash.holdMail == nil, "someone who turned the hold off gets \"show as it happens\"")
+ns.db.splash.shops = "quiet"
 check(ns:SplashLevel(100 * C) == 0 and ns:SplashLevel(700 * C) == 1 and ns:SplashLevel(1000 * C) == 2 and ns:SplashLevel(5000 * C) == 3 and ns:SplashLevel(10000 * C) == 4
     and ns:SplashLevel(25000 * C) == 5 and ns:SplashLevel(50000 * C) == 6 and ns:SplashLevel(100000 * C) == 7 and ns:SplashLevel(500000 * C) == 7, "the seven shipped levels at 500, 1k, 5k, 10k, 25k, 50k and 100k")
 check(ns.Splash and not ns.Splash:IsShown(), "the splash frame exists and is hidden")
@@ -744,6 +763,7 @@ ns:Fire("EARNED", 400 * C)
 Advance(3); RunTimers()
 check(ns.lastSplash and ns.lastSplash.amount == 1200 * C and ns.lastSplash.level == 2 and ns.lastSplash.subtitle == nil, "gains inside the merge window are one splash: " .. tostring(ns.lastSplash and ns.FormatGold(ns.lastSplash.amount)))
 ns.lastSplash = nil
+ns.db.splash.shops = "merge" -- this run is what "one number when you leave" does
 Fire("MAIL_SHOW")
 ns:Fire("EARNED", 10000 * C)
 Advance(10); RunTimers()
@@ -756,6 +776,57 @@ Fire("MAIL_CLOSED")
 check(ns.lastSplash == nil, "not at the instant it closes either")
 Advance(3); RunTimers()
 check(ns.lastSplash and ns.lastSplash.amount == 20000 * C and ns.lastSplash.level == 4 and ns.lastSplash.subtitle == nil, "the mailbox run shows once, net of the stock that left: " .. tostring(ns.lastSplash and ns.FormatGold(ns.lastSplash.amount)))
+ns.db.splash.shops = "quiet"
+-- a sale: gold in while stock leaves at cost shows its profit and margin, under the threshold too
+ns.lastSplash = nil
+Fire("MAIL_SHOW")
+ns:Fire("EARNED", 300 * C, 300 * C, 0)
+ns:Fire("EARNED", -200 * C, 0, -200 * C)
+Fire("MAIL_CLOSED")
+Advance(3); RunTimers()
+check(ns.lastSplash and ns.lastSplash.amount == 100 * C and ns.lastSplash.level == 1 and not ns.lastSplash.loss and ns.lastSplash.subtitle == "50% profit on 200g at cost",
+    "a small sale shows its profit with the margin on cost: " .. tostring(ns.lastSplash and ns.lastSplash.subtitle))
+ns.lastSplash = nil
+ns:Fire("EARNED", 150 * C, 150 * C, 0)
+ns:Fire("EARNED", -200 * C, 0, -200 * C)
+Advance(3); RunTimers()
+check(ns.lastSplash and ns.lastSplash.amount == -50 * C and ns.lastSplash.loss and ns.lastSplash.subtitle == "25% loss on 200g at cost",
+    "a sale at a loss shows in red with the margin: " .. tostring(ns.lastSplash and ns.lastSplash.subtitle))
+ns.lastSplash = nil
+ns:Fire("EARNED", 0, 200 * C, -200 * C)
+Advance(3); RunTimers()
+check(ns.lastSplash and ns.lastSplash.amount == 0 and ns.lastSplash.subtitle == "no profit on 200g at cost", "a sale at cost still shows: " .. tostring(ns.lastSplash and ns.lastSplash.subtitle))
+ns.lastSplash = nil
+ns:Fire("EARNED", -200 * C, 0, -200 * C) -- stock written off: no gold came in, so not a sale
+Advance(3); RunTimers()
+check(ns.lastSplash == nil, "stock leaving without gold arriving is not a sale")
+ns.db.splash.profit = false
+ns:Fire("EARNED", 300 * C, 300 * C, 0)
+ns:Fire("EARNED", -200 * C, 0, -200 * C)
+Advance(3); RunTimers()
+check(ns.lastSplash == nil, "switched off, a small sale is under the threshold like any gain")
+ns.db.splash.profit = true
+check(ns.ProfitLine(1 * C, 1000 * C) == "<1% profit on 1,000g at cost" and ns.ProfitLine(3000 * C, 1000 * C) == "300% profit on 1,000g at cost", "the profit line rounds sensibly")
+ns:PreviewProfitSplash()
+check(ns.lastSplash.amount == 357 * C and ns.lastSplash.subtitle == "43% profit on 830g at cost", "the profit preview")
+-- through the ledger: the mail's gold arrives, then CraftSimPL takes the stock out at cost
+ns.lastSplash = nil
+WC = { apiVersion = 1, realmKey = "TestRealm", openBatches = 1, poolsAtCost = 0, stockAtCost = 50000 * C, estimated = false,
+    listedNet = 0, presumedSoldNet = 0, restNet = 0, unpricedQty = 0, resetAt = 300 }
+WC_LISTENER(); RunTimers()
+Advance(3); RunTimers()
+ns.lastSplash = nil
+Fire("MAIL_SHOW")
+MONEY = MONEY + 3000 * C
+Fire("PLAYER_MONEY")
+Fire("MAIL_CLOSED")
+WC.stockAtCost = WC.stockAtCost - 2000 * C
+WC_LISTENER(); RunTimers()
+Advance(3); RunTimers()
+check(ns.lastSplash and ns.lastSplash.amount == 1000 * C and ns.lastSplash.level == 2 and ns.lastSplash.subtitle == "50% profit on 2,000g at cost",
+    "a real sale reaches the splash as its profit: " .. tostring(ns.lastSplash and ns.lastSplash.subtitle))
+ns:ForgetCraftingRealm("TestRealm")
+Advance(3); RunTimers()
 ns.lastSplash = nil
 MONEY = MONEY + 150000 * C
 Fire("PLAYER_MONEY")
@@ -941,13 +1012,13 @@ Advance(3); RunTimers()
 check(ns.lastSplash and ns.lastSplash.loss and ns.lastSplash.amount == -5000 * C and ns.lastSplash.subtitle == "spent", "with losses on, a big spend shows in red")
 ns.db.splash.losses = false
 ns.lastSplash = nil
-ns.db.splash.holdMail = false
+ns.db.splash.shops = "show"
 Fire("MAIL_SHOW")
 ns:Fire("EARNED", 700 * C)
 Advance(3); RunTimers()
-check(ns.lastSplash and ns.lastSplash.amount == 700 * C, "with the hold off, gains show while the mailbox is open")
+check(ns.lastSplash and ns.lastSplash.amount == 700 * C, "with the shops shown as they happen, gains show while the mailbox is open")
 Fire("MAIL_CLOSED")
-ns.db.splash.holdMail = true
+ns.db.splash.shops = "quiet"
 ns.lastSplash = nil
 ns.db.splash.followBar = true
 IN_COMBAT = true
@@ -987,19 +1058,238 @@ Advance(3); RunTimers()
 check(ns.lastSplash and not tostring(ns.lastSplash.subtitle):find("banked"), "with the celebration off, a banked goal passes quietly")
 ns.db.splash.celebrateBanked = true
 ns.db.bankedTiers = { true, true } -- the two tiers banked earlier stay celebrated
--- the log, and a mailbox hold that the mail frame says is stale
+-- the log, and a shop hold that the window itself says is stale
 check(ns.splashLog and #ns.splashLog > 0 and ns.splashLog[1].kind == "flush", "every gain and flush is logged: " .. tostring(ns.splashLog[1].note))
 _G.MailFrame = NewWidget("Frame", "MailFrame")
 MailFrame:Hide()
 Fire("MAIL_SHOW")
 ns.lastSplash = nil
 ns:Fire("EARNED", 956 * C)
-check(ns.lastSplash == nil, "held at first...")
+check(ns.lastSplash == nil, "nothing inside the merge window...")
 Advance(3); RunTimers()
 check(ns.lastSplash and ns.lastSplash.amount == 956 * C, "...but with the mail frame not actually shown, the hold is released and the gain shows")
 Fire("MAIL_CLOSED")
 _G.MailFrame = nil
 SlashCmdList.GOLDGOAL("splash log")
+SlashCmdList.GOLDGOAL("status")
+
+print("Quiet in the shops")
+local savedShops, savedMarks = ns.db.splash.shops, ns.db.splash.marks
+-- real windows start hidden and show themselves; the frame on screen is
+-- what the addon goes by, with the event only a fallback.
+local SHOP_FRAME = {
+    MERCHANT_SHOW = "MerchantFrame", MERCHANT_CLOSED = "MerchantFrame",
+    AUCTION_HOUSE_SHOW = "AuctionHouseFrame", AUCTION_HOUSE_CLOSED = "AuctionHouseFrame",
+    MAIL_SHOW = "MailFrame", MAIL_CLOSED = "MailFrame",
+}
+for _, name in ipairs({ "MerchantFrame", "AuctionHouseFrame", "MailFrame" }) do
+    _G[name] = NewWidget("Frame", name)
+    _G[name]:Hide()
+end
+-- Fire an open/close event and move its window with it. Events with no
+-- stubbed frame (the profession window, crafting orders) stand on the
+-- event alone, which is what an unloaded load-on-demand frame looks like.
+local function Shop(ev)
+    local f = SHOP_FRAME[ev] and _G[SHOP_FRAME[ev]]
+    if f then
+        if ev:find("SHOW") then f:Show() else f:Hide() end
+    end
+    Fire(ev)
+end
+ns.db.splash.shops, ns.db.splash.marks = "quiet", false
+
+-- a vendor: nothing shows, before or after it closes
+ns.lastSplash = nil
+Shop("MERCHANT_SHOW")
+ns:Fire("EARNED", 5000 * C)
+Advance(3); RunTimers()
+check(ns.lastSplash == nil, "at a vendor a gain shows nothing")
+Shop("MERCHANT_CLOSED")
+Advance(3); RunTimers()
+check(ns.lastSplash == nil, "and nothing when it closes either: the gold is counted, not celebrated")
+local dropped
+for _, l in ipairs(ns.splashLog) do
+    if l.kind == "flush" and tostring(l.note):find("quiet: a vendor") then dropped = l end
+end
+check(dropped, "the log says why: " .. tostring(dropped and dropped.note))
+-- ...and out in the world it is back
+ns:Fire("EARNED", 5000 * C)
+Advance(3); RunTimers()
+check(ns.lastSplash and ns.lastSplash.amount == 5000 * C, "out of the shop the same gain splashes")
+
+-- every window counts, and player-to-player trade deliberately does not
+for _, pair in ipairs({
+    { "AUCTION_HOUSE_SHOW", "AUCTION_HOUSE_CLOSED" },
+    { "TRADE_SKILL_SHOW", "TRADE_SKILL_CLOSE" },              -- CLOSE, not CLOSED
+    { "CRAFTINGORDERS_SHOW_CUSTOMER", "CRAFTINGORDERS_HIDE_CUSTOMER" },
+    { "CRAFTINGORDERS_SHOW_CRAFTER", "CRAFTINGORDERS_HIDE_CRAFTER" },
+}) do
+    ns.lastSplash = nil
+    Shop(pair[1])
+    ns:Fire("EARNED", 5000 * C)
+    Advance(3); RunTimers()
+    check(ns.lastSplash == nil, pair[1] .. " keeps it quiet")
+    Shop(pair[2])
+    ns.lastSplash = nil
+    ns:Fire("EARNED", 5000 * C)
+    Advance(3); RunTimers()
+    check(ns.lastSplash and ns.lastSplash.amount == 5000 * C, pair[2] .. " releases it again")
+end
+ns.lastSplash = nil
+Fire("TRADE_SHOW") -- not a shop: a trade is real income
+ns:Fire("EARNED", 5000 * C)
+Advance(3); RunTimers()
+check(ns.lastSplash and ns.lastSplash.amount == 5000 * C, "a player trade is not a shop and still splashes")
+
+-- two open at once: closing one does not release the other
+ns.lastSplash = nil
+Shop("AUCTION_HOUSE_SHOW")
+Shop("MAIL_SHOW")
+Shop("AUCTION_HOUSE_CLOSED")
+ns:Fire("EARNED", 5000 * C)
+Advance(3); RunTimers()
+check(ns.lastSplash == nil, "the mailbox still holds it after the auction house closes")
+Shop("MAIL_CLOSED")
+Advance(3); RunTimers()
+check(ns.lastSplash == nil, "and it is dropped, not shown, when the last one closes")
+
+-- the percent mark is kept, not eaten
+ns.db.splash.marks = true
+ns.db.splash.markEvery, ns.db.splash.markBigEvery = 5, 25
+p = ns:Projection()
+ns.db.progressMark = { target = p.target, pct = math.floor(p.total / p.target * 100 / 5) * 5 }
+local heldMark = ns.db.progressMark.pct
+ns.lastSplash = nil
+Shop("AUCTION_HOUSE_SHOW")
+MONEY = MONEY + ((heldMark + 5) / 100 * p.target - p.total) + 1 * C
+Fire("PLAYER_MONEY")
+Advance(3); RunTimers()
+check(ns.lastSplash == nil and ns.db.progressMark.pct == heldMark, "a mark crossed in the shops is not announced and not eaten")
+Shop("AUCTION_HOUSE_CLOSED")
+MONEY = MONEY + 600 * C
+Fire("PLAYER_MONEY")
+Advance(3); RunTimers()
+check(ns.lastSplash and ns.lastSplash.subtitle == (heldMark + 5) .. "% of Goal", "the next gain out in the world carries it: " .. tostring(ns.lastSplash and ns.lastSplash.subtitle))
+ns.db.splash.markEvery, ns.db.splash.markBigEvery = 1, 10
+ns.db.splash.marks = false
+
+-- the day's quota still shows, on its own without the amount
+local day = ns.db.days[ns:DayID()]
+day.met, day.quota = false, 1 * C
+ns.lastSplash = nil
+Shop("MERCHANT_SHOW")
+ns:Fire("EARNED", 5000 * C)
+Advance(3); RunTimers()
+check(ns.lastSplash and ns.lastSplash.title == "Daily quota met!" and ns.lastSplash.amount == 0,
+    "the day's quota still shows through the quiet, without the amount: " .. tostring(ns.lastSplash and ns.lastSplash.title))
+Shop("MERCHANT_CLOSED")
+
+-- a banked goal too
+ns.db.bankedTiers = {}
+ns.lastSplash = nil
+Shop("MAIL_SHOW")
+ns:Fire("EARNED", 5000 * C)
+Advance(3); RunTimers()
+check(ns.lastSplash and tostring(ns.lastSplash.title):find("banked") and ns.lastSplash.amount == 0,
+    "a banked goal still shows through the quiet: " .. tostring(ns.lastSplash and ns.lastSplash.title))
+ns.db.bankedTiers = { true, true }
+Shop("MAIL_CLOSED")
+
+-- and a sale shows its profit: the cost is already netted out, so it is honest
+ns.lastSplash = nil
+Shop("MAIL_SHOW")
+ns:Fire("EARNED", 300 * C, 300 * C, 0)
+ns:Fire("EARNED", -200 * C, 0, -200 * C)
+Advance(3); RunTimers()
+check(ns.lastSplash and ns.lastSplash.amount == 100 * C and ns.lastSplash.subtitle == "50% profit on 200g at cost",
+    "a sale still shows its profit through the quiet: " .. tostring(ns.lastSplash and ns.lastSplash.subtitle))
+Shop("MAIL_CLOSED")
+
+-- a stale hold is pruned by the window itself, on the next gain
+ns.lastSplash = nil
+Shop("MERCHANT_SHOW")
+MerchantFrame:Hide()
+ns:Fire("EARNED", 5000 * C)
+Advance(3); RunTimers()
+check(ns.lastSplash and ns.lastSplash.amount == 5000 * C, "a hold the vendor frame calls stale is released and the gain shows")
+Shop("MERCHANT_CLOSED")
+
+-- a window on screen is open even when its event never arrives
+ns.lastSplash = nil
+MerchantFrame:Show()   -- no MERCHANT_SHOW at all
+ns:Fire("EARNED", 5000 * C)
+Advance(3); RunTimers()
+check(ns.lastSplash == nil, "a window seen on screen is quiet even if its open event never fired")
+MerchantFrame:Hide()
+ns.lastSplash = nil
+ns:Fire("EARNED", 5000 * C)
+Advance(3); RunTimers()
+check(ns.lastSplash and ns.lastSplash.amount == 5000 * C, "and closing it releases without a close event either")
+
+-- a close event that never arrives cannot silence the session. Crafting
+-- orders have no frame we can see here, so the event is all there is.
+ns.lastSplash = nil
+Shop("CRAFTINGORDERS_SHOW_CUSTOMER")
+Fire("PLAYER_ENTERING_WORLD")
+ns:Fire("EARNED", 5000 * C)
+Advance(3); RunTimers()
+check(ns.lastSplash and ns.lastSplash.amount == 5000 * C, "a loading screen closes every window, so a missed close cannot go quiet for good")
+
+-- a craft session: reagents become crafted stock, so CraftSimPL revaluing
+-- the two moves the total with no gold in sight. The profession window is
+-- open while you craft, so that is quiet too.
+local savedPools, savedStock = WC.poolsAtCost, WC.stockAtCost
+ns.lastSplash = nil
+Shop("TRADE_SKILL_SHOW")
+WC.poolsAtCost = WC.poolsAtCost - 50000 * C
+WC.stockAtCost = WC.stockAtCost + 55000 * C   -- crafted up: 5,000g of value
+WC_LISTENER()
+RunTimers()
+Advance(3); RunTimers()
+check(ns.lastSplash == nil, "a craft session at the profession window is quiet")
+Shop("TRADE_SKILL_CLOSE")
+ns.lastSplash = nil
+WC.poolsAtCost = WC.poolsAtCost - 50000 * C
+WC.stockAtCost = WC.stockAtCost + 55000 * C
+WC_LISTENER()
+RunTimers()
+Advance(3); RunTimers()
+check(ns.lastSplash == nil, "and away from it too: crafting moves no gold, so revaluing the stock is never income")
+-- a gain that really is gold still shows, in the same breath as a revaluation
+ns.lastSplash = nil
+Shop("MERCHANT_CLOSED")
+ns:Fire("EARNED", 5000 * C, 5000 * C, 0)
+Advance(3); RunTimers()
+check(ns.lastSplash and ns.lastSplash.amount == 5000 * C, "gold that really arrived is not caught by that rule")
+-- stock written down with no gold arriving is not a sale: it must not slip
+-- through the sale exemption, and a plain loss is not shown by default
+ns.lastSplash = nil
+WC.stockAtCost = WC.stockAtCost - 40000 * C
+WC_LISTENER()
+RunTimers()
+Advance(3); RunTimers()
+check(ns.lastSplash == nil, "stock written down with no gold in is not read as a sale")
+WC.poolsAtCost, WC.stockAtCost = savedPools, savedStock
+WC_LISTENER()
+RunTimers()
+Advance(3); RunTimers()
+ns.lastSplash = nil
+
+-- "merge" at a vendor: held, then one number when you leave
+ns.db.splash.shops = "merge"
+ns.lastSplash = nil
+Shop("MERCHANT_SHOW")
+ns:Fire("EARNED", 400 * C)
+ns:Fire("EARNED", 400 * C)
+Advance(10); RunTimers()
+check(ns.lastSplash == nil and (ns:SplashPending()) == 800 * C, "merge: held at the vendor however long")
+ns:Fire("EARNED", 400 * C)
+Shop("MERCHANT_CLOSED")
+Advance(3); RunTimers()
+check(ns.lastSplash and ns.lastSplash.amount == 1200 * C, "merge: one number when you leave")
+
+ns.db.splash.shops, ns.db.splash.marks = savedShops, savedMarks
+_G.MerchantFrame, _G.AuctionHouseFrame, _G.MailFrame = nil, nil, nil
 
 print("EllesmereUI options panel")
 local grp
@@ -1072,6 +1362,10 @@ check(ns:SplashThreshold() == 500 * C, "Shipped levels puts it back")
 ctl("Time on screen").set(200)
 check(ns.db.look.splashSpeed == 2 and ctl("Time on screen").get() == 200, "Splash page: time on screen in percent")
 ctl("Time on screen").set(100)
+check(ctl("In the shops").get() == "quiet", "Splash page: the shop rule reads the setting")
+ctl("In the shops").set("merge")
+check(ns.db.splash.shops == "merge" and ctl("In the shops").get() == "merge", "Splash page: and writes it through")
+ctl("In the shops").set("quiet")
 sed.rows[3].Preview:Click()
 check(ns.lastSplash.level == 3, "Splash page: each row previews its level")
 wipe(EUI_CONTROLS)

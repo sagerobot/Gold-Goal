@@ -27,7 +27,7 @@ ns.DEFAULTS = {
     crafting = {},              -- [realmKey] = CraftSimPL working capital at cost (Crafting.lua)
     countCrafting = true,       -- crafting stock at cost counts in the total
     days = {},                  -- [dayID] = { start, last, quota, week }
-    weeks = {},                 -- [weekID] = { start, last, quota, days }
+    weeks = {},                 -- [weekID] = { start, last, quota, days, firstDay }
     bar = { shown = true, locked = false, mode = "daily", pos = nil, scale = 1.0, width = 220, hideInCombat = true,
         instanceMode = "smart",     -- "show" | "smart" (M+ always, raids in combat, PvP) | "group" (any instance when grouped) | "hide"
         afterMet = "count" },       -- once today's quota is met: "count" (105%, a lap over the bar) | "week" (show the week)
@@ -38,7 +38,11 @@ ns.DEFAULTS = {
         markEvery = 1, markBigEvery = 10,             -- percent marks: how often, and when they get bigger
         celebrateQuota = true, celebrateBanked = true, -- the quota-met and goal-banked splashes
         losses = false,             -- show big spends too, in red
-        holdMail = true,            -- hold everything while the mailbox is open
+        profit = true,              -- a sale of crafting stock (gold in, stock out at cost) shows its profit and margin, whatever the size
+        shops = "quiet",            -- gold that moves while the auction house, a vendor, the mailbox,
+                                    -- the profession window or a crafting order is open:
+                                    -- "quiet" (counted, never splashed) | "merge" (one number when
+                                    -- you leave) | "show" (treated like any other gold)
         followBar = false },        -- keep quiet wherever the bar's hide rules hide it
     progressMark = nil,         -- { target, pct }: the last whole percent of the paced tier announced
     bankedTiers = {},           -- [tierIndex] = true once its splash has shown
@@ -121,8 +125,16 @@ function ns:On(message, fn)
     table.insert(listeners[message], fn)
 end
 
+-- One message reaches the bar, the broker, the window and the options
+-- page, and every one of them asks for the same projection. `dispatching`
+-- is what lets them share one (Goal.lua caches it only while a message is
+-- out): a listener cannot have moved the ledger without saying so, while
+-- anything calling in from outside gets a reading taken there and then.
 function ns:Fire(message, ...)
-    if listeners[message] then Call(listeners[message], ...) end
+    if not listeners[message] then return end
+    self.dispatching = (self.dispatching or 0) + 1
+    Call(listeners[message], ...)
+    self.dispatching = self.dispatching - 1
 end
 
 local eventFrame = CreateFrame("Frame")
@@ -158,6 +170,7 @@ end
 local function LoadSavedVariables()
     GoldGoalDB = CopyDefaults(GoldGoalDB, ns.DEFAULTS)
     ns.db = GoldGoalDB
+    if ns.Invalidate then ns:Invalidate() end -- a reset swaps the whole table out
 end
 ns.LoadSavedVariables = LoadSavedVariables
 
@@ -193,6 +206,9 @@ function ns:PrintStatus()
     print(string.format("  Averages: 7d %s/day, 30d %s/day, since start %s/day", self.FormatGold(p.avg7), self.FormatGold(p.avg30), self.FormatGold(p.avgGoal)))
     print("  " .. self.StripColor(self:StatusText(p)))
     print("  Style:", self.Style and self.Style.mode or "undecided", self.Style and self.Style.IsSkinned() and "(EllesmereUI skin)" or "")
+    local _, _, shopOpen = self:SplashPending()
+    print(string.format("  Splash: %s, level 1 from %s, in the shops %q%s", self.db.splash.enabled and "on" or "off",
+        self.FormatGold(self:SplashThreshold()), self.db.splash.shops or "quiet", shopOpen and ("; open now: " .. shopOpen) or ""))
     for _, c in ipairs(self:SortedCharacters()) do
         print(string.format("    %-24s %14s  %s%s", c.key, self.FormatGold(c.money), c.source or "?", c.include == false and "  (excluded)" or ""))
     end
@@ -208,6 +224,7 @@ local HELP = {
     "  /gg lock                lock or unlock the bar",
     "  /gg splash [gold]       preview the gold splash (at that amount)",
     "  /gg splash log          what came in this session and what the splash did with it",
+    "  /gg splash profit       preview a sale's profit splash",
     "  /gg target <n|mount|set|ladder>   one amount, or a preset ladder of tiers",
     "  /gg tiers 5m Mount, 7m Mount + vendors, 10m Buffer   your own tiers",
     "  /gg tier <n>            pace towards tier n",
@@ -259,6 +276,7 @@ SlashCmdList.GOLDGOAL = function(msg)
     elseif cmd == "splash" then
         local copper = ns.ParseGold(rest)
         if rest == "log" then ns:PrintSplashLog()
+        elseif rest == "profit" then ns:PreviewProfitSplash()
         elseif copper then ns:ShowSplash(copper)
         else ns:PreviewSplash(3) end
     elseif cmd == "target" then

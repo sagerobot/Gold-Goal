@@ -6,6 +6,7 @@ local Style, UI = ns.Style, ns.UI
 
 local bar
 local BAR_H = 20
+local NO_TICKS = {} -- shared, so a bar with no marks allocates nothing
 
 local function SavePosition()
     local point, _, relPoint, x, y = bar:GetPoint(1)
@@ -152,25 +153,48 @@ function ns:PeekBar()
     C_Timer.After(PEEK + 0.1, function() ns:RefreshBar() end)
 end
 
+-- Whether the rules let the bar be on screen at all right now.
+function ns:BarAllowed()
+    if self.barPeekUntil and (GetTime and GetTime() or time()) < self.barPeekUntil then return true end
+    if not self.db.bar.shown then return false end
+    if self.db.bar.hideInCombat and InCombatLockdown() then return false end
+    if self:BarHiddenByInstance() then return false end
+    return true
+end
+
+-- Combat, zoning, the group and keystones change whether the bar is on
+-- screen, never what it says, and they fire far more often than gold
+-- moves (a battleground is a stream of GROUP_ROSTER_UPDATE). So they
+-- settle the visibility and only repaint for the trip back on screen.
+function ns:UpdateBarVisibility()
+    if not bar or not self.db then return end
+    if not self:BarAllowed() then bar:Hide(); return end
+    if bar:IsShown() then return end
+    self:RefreshBar()
+end
+
 function ns:RefreshBar()
     if not bar or not self.db then return end
-    local peeking = self.barPeekUntil and (GetTime and GetTime() or time()) < self.barPeekUntil
-    if not peeking then
-        if not self.db.bar.shown then bar:Hide(); return end
-        if self.db.bar.hideInCombat and InCombatLockdown() then bar:Hide(); return end
-        if self:BarHiddenByInstance() then bar:Hide(); return end
-    end
+    if not self:BarAllowed() then bar:Hide(); return end
     local p = self:Projection()
     local weekly = self:BarShowsWeek(p)
     bar.Label:SetText(weekly and "Week" or "Today")
     local earned = weekly and p.week or p.today
     local quota = weekly and p.weekQuota or p.quota
     bar.Progress:Set(earned, quota, self:BarText(p, weekly))
-    local met = quota and quota > 0 and earned >= quota
-    bar.Check:SetShown(met and true or false)
-    bar.Progress.Text:ClearAllPoints()
-    bar.Progress.Text:SetPoint("LEFT", (self.db.look or {}).barLabel ~= false and bar.Label or bar.Progress, (self.db.look or {}).barLabel ~= false and "RIGHT" or "LEFT", (self.db.look or {}).barLabel ~= false and 4 or 5, 0)
-    bar.Progress.Text:SetPoint("RIGHT", met and bar.Check or bar.Progress, met and "LEFT" or "RIGHT", met and -4 or -5, 0)
+    local met = quota and quota > 0 and earned >= quota and true or false
+    bar.Check:SetShown(met)
+    -- the text sits between the label and the check mark, both of which
+    -- come and go; re-anchoring it is four layout calls, so it is only
+    -- done when one of the two has actually changed
+    local labelled = (self.db.look or {}).barLabel ~= false
+    local anchoring = (labelled and "L" or "-") .. (met and "M" or "-")
+    if bar.textAnchoring ~= anchoring then
+        bar.textAnchoring = anchoring
+        bar.Progress.Text:ClearAllPoints()
+        bar.Progress.Text:SetPoint("LEFT", labelled and bar.Label or bar.Progress, labelled and "RIGHT" or "LEFT", labelled and 4 or 5, 0)
+        bar.Progress.Text:SetPoint("RIGHT", met and bar.Check or bar.Progress, met and "LEFT" or "RIGHT", met and -4 or -5, 0)
+    end
     -- the tiers on the quota: marks where each still needs the day to be,
     -- red to green up to the hard goal, blue into the accent past it
     if quota and quota > 0 and (self.db.look or {}).barColors ~= false then
@@ -178,7 +202,7 @@ function ns:RefreshBar()
         bar.Progress:SetTicks(ticks)
         bar.Progress:SetColor(UI.GoalColor(earned / quota, hardFrac))
     else
-        bar.Progress:SetTicks({})
+        bar.Progress:SetTicks(NO_TICKS)
         bar.Progress:SetColor(Style.Accent())
     end
     bar:Show()
@@ -212,7 +236,7 @@ ns:On("LOGIN", function()
     ns:RefreshBar()
     for _, event in ipairs({ "PLAYER_REGEN_DISABLED", "PLAYER_REGEN_ENABLED", "PLAYER_ENTERING_WORLD", "ZONE_CHANGED_NEW_AREA", "GROUP_ROSTER_UPDATE",
         "CHALLENGE_MODE_START", "CHALLENGE_MODE_COMPLETED", "CHALLENGE_MODE_RESET" }) do
-        ns:RegisterEvent(event, function() ns:RefreshBar() end)
+        ns:RegisterEvent(event, function() ns:UpdateBarVisibility() end)
     end
 end)
 ns:On("WEALTH_CHANGED", function() ns:RefreshBar() end)

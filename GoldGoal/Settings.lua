@@ -206,7 +206,7 @@ function ns:BuildSettingsPage(page)
 
     Header("Gold splash")
     AddCheck("Show a splash when gold comes in",
-        "A combat-text style pop in the middle of the screen when the total grows by more than level 1: bigger, golden and louder the more it is. Gains within the merge window are one event, and a mailbox run shows once, when the mailbox closes.",
+        "A combat-text style pop in the middle of the screen when the total grows by more than level 1: bigger, golden and louder the more it is. Gains within the merge window are one event, and gold that moves in the shops is counted without a splash.",
         function() return ns.db.splash.enabled end, function(v) ns.db.splash.enabled = v end)
     local levelRow = Row(1)
     panel.splashEditor = UI.SplashLevelEditor(levelRow, UI.WIDTH - 2 * UI.PAD - 12)
@@ -254,8 +254,15 @@ function ns:BuildSettingsPage(page)
     end)
     AddCheck("Show big spends too, in red", "A loss past level 1 shows as a red amount saying spent. No sound, glow or frame.",
         function() return ns.db.splash.losses end, function(v) ns.db.splash.losses = v end)
-    AddCheck("Hold while the mailbox is open", "Nothing shows until the mailbox closes, so a run through the mails is one number. Off, gains show as they merge.",
-        function() return ns.db.splash.holdMail ~= false end, function(v) ns.db.splash.holdMail = v end)
+    AddCheck("Show every sale's profit", "With CraftSimPL, gold arriving as stock leaves at cost is a sale: it shows its profit however small, with the margin on cost under it. A sale at a loss shows in red.",
+        function() return ns.db.splash.profit ~= false end, function(v) ns.db.splash.profit = v end)
+    local shopRow = Row(26)
+    RowLabel(shopRow, "In the shops")
+    panel.ShopTabs = Switch(shopRow, {
+        { "quiet", "Stay quiet", "The auction house, vendors, the mailbox, the profession window and crafting orders: gold mostly moves around in there, out for reagents and back as sale mail. It all counts, none of it splashes. A goal banked, the day's quota and a sale's profit still show; a percent mark keeps for the next gain out in the world. Mail gold with no cost behind it is silent too." },
+        { "merge", "One number", "Held while a window is open, then the total when you leave it. What the mailbox used to do, for all of them." },
+        { "show", "As it happens", "No special treatment: gold there splashes like any other." },
+    }, 84, function(key) ns.db.splash.shops = key; ns:RefreshSettings() end)
     AddCheck("Follow the bar's hide rules", "Stay quiet wherever the bar is hidden: in combat, in Mythic+ and the rest of the instance rule.",
         function() return ns.db.splash.followBar end, function(v) ns.db.splash.followBar = v end)
     local mergeRow = Row(26)
@@ -385,6 +392,7 @@ function ns:RefreshSettings()
     Select(panel.InstanceTabs, db.bar.instanceMode or "smart")
     Select(panel.AfterMetTabs, db.bar.afterMet or "count")
     Select(panel.IconTabs, db.look.splashIcon or "custom")
+    Select(panel.ShopTabs, db.splash.shops or "quiet")
     Select(panel.BrokerTabs, db.broker.mode)
     panel.goalEditor:Refresh()
     panel.splashEditor:Refresh()

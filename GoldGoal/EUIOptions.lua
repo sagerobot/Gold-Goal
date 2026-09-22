@@ -248,6 +248,11 @@ function PAGES.Splash(W, parent, y)
         "Stay quiet wherever the bar is hidden: in combat, in Mythic+ and the rest of the instance rule. The gold still counts."); y = y - h
     _, h = W:Toggle(parent, "Show big spends too, in red", y, function() return cfg.losses end, function(v) cfg.losses = v end,
         "A loss past level 1 shows as a red amount saying spent. No sound, glow or frame."); y = y - h
+    _, h = W:Toggle(parent, "Show every sale's profit", y, function() return cfg.profit ~= false end, function(v) cfg.profit = v end,
+        "With CraftSimPL, gold arriving as stock leaves at cost is a sale: it shows its profit however small, with the margin on cost under it. A sale at a loss shows in red."); y = y - h
+    _, h = W:Dropdown(parent, "In the shops", y, ns.SPLASH_SHOP_MODES, function() return cfg.shops or "quiet" end,
+        function(v) cfg.shops = v end, ns.SPLASH_SHOP_ORDER,
+        "The auction house, vendors, the mailbox, the profession window and crafting orders: gold mostly moves around in there, out for reagents and back as sale mail. Stay quiet counts it all and splashes none of it (a goal banked, the day's quota and a sale's profit still show, and a percent mark keeps for the next gain out in the world; mail gold with no cost behind it is silent too). One number when you leave holds it and shows the total, which is what the mailbox used to do. Show as it happens treats it like any other gold."); y = y - h
 
     _, h = W:SectionHeader(parent, "LEVELS", y); y = y - h
     local ed = UI.SplashLevelEditor(parent, (parent:GetWidth() or 700) - PAD * 2)
@@ -288,8 +293,6 @@ function PAGES.Splash(W, parent, y)
     _, h = W:SectionHeader(parent, "TIMING AND PLACE", y); y = y - h
     _, h = W:Slider(parent, "Merge window (seconds)", y, 0.5, 15, 0.5, function() return cfg.merge end, function(v) cfg.merge = v end,
         "How long it stays quiet before a gain shows; everything inside the window is one event."); y = y - h
-    _, h = W:Toggle(parent, "Hold while the mailbox is open", y, function() return cfg.holdMail ~= false end, function(v) cfg.holdMail = v end,
-        "Nothing shows until the mailbox closes, so a run through the mails is one number. Off, gains show as they merge."); y = y - h
     _, h = W:Slider(parent, "Scale", y, 50, 250, 10, PctGet(function() return cfg.scale end), function(v) cfg.scale = v / 100; Apply() end, "In percent."); y = y - h
     _, h = W:Slider(parent, "Height on screen", y, -400, 400, 10, function() return cfg.offsetY end, function(v) cfg.offsetY = v; Apply() end,
         "Pixels above (or below) the centre of the screen."); y = y - h

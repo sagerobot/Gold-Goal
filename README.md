@@ -26,7 +26,8 @@ much you need today.
   an idle week raises it. The Goal page shows both: today's quota and what
   tomorrow's will be at this pace.
 - **A weekly quota** for people who play on reset night or at the
-  weekend: the daily quota times the days of the week that are left.
+  weekend: the daily quota times the days of the week, both as of the
+  first day seen that week, so it holds still until the reset.
 - **The bar.** A slim on-screen bar, `Today  +8,450g / 14,000g  60%`,
   that follows the daily quest reset. Click it to open the window,
   right-click to switch it to the week, drag it anywhere (lock it in
@@ -62,19 +63,41 @@ much you need today.
   5k and the epic toast from 10k, the glow from 5k. Add a level and it
   starts at twice the top one, a step bigger.
   Big spends can show too, in red, and the splash can follow the bar's
-  hide rules. Gains that arrive
-  within the merge window (2 seconds) are one event, and while the mailbox
-  is open nothing shows until it closes, so a run through fifty sale mails
-  is one big number. The amount is the net change in what the addon
-  counts, so with CraftSimPL a sale shows its profit and a reagent buy
-  shows nothing. A line under the amount says what it moved: "+23% of
+  hide rules. Gains that arrive within the merge window (2 seconds) are
+  one event. The amount is the net change in what the addon counts, so
+  with CraftSimPL a sale shows its profit and a reagent buy shows nothing.
+  A sale (gold in while stock leaves at cost) shows however small it is,
+  with its margin under it: "43% profit on 830g at cost", or the loss in
+  red; switchable, previewed with `/gg splash profit`.
+  A line under the amount says what it moved: "+23% of
   today's quota (81%)" for everyday amounts, "+1.2% of Goal (64.3%)" once
   it is a real share of the tier. Percent marks of the goal get a note of
   their own ("64%  of Goal"), even when a copper crossed one, as often as
   you like (every 1, 2, 5, 10, 20 or 25 percent) with a bigger one every
   10, 20, 25, 50 or 100; meeting the day's quota or banking a goal gets the
-  top splash, each switchable. The mailbox hold can be turned off to see
-  gains as they merge. Preview the levels in Settings or with `/gg splash 2m`.
+  top splash, each switchable. Preview the levels in Settings or with
+  `/gg splash 2m`.
+- **Quiet in the shops.** At the auction house, a vendor, the mailbox, the
+  profession window or a crafting order, gold is mostly only moving
+  around: out for reagents, back as sale mail. So by default what moves
+  while one of those is open is counted and never splashed — no red
+  number when you buy mats, no windfall when you take fifty sale mails.
+  It all still counts in the ledger, the bar and the history: only the pop
+  is gone. Gold that arrives out in the world, a quest, a rare, a player
+  trade, splashes as it always did. What survives the quiet: a goal
+  banked and the day's quota met still show (the moment alone, without the
+  amount), a percent mark is kept for the next gain out in the world
+  rather than eaten, and with CraftSimPL a sale still shows its profit,
+  which is the honest number. A window on screen is what counts as open,
+  so a client that stops sending one of the events changes nothing.
+  Crafting gets a rule of its own that does not depend on any of that:
+  making things moves no gold, so a change with the stock moving and the
+  gold still is CraftSimPL revaluing your position, and that is never
+  celebrated wherever you are standing. The flip side is that mail gold with no cost
+  behind it — a BoE sale, a quest reward by post — is silent too.
+  Settings > *In the shops* has the other two: *One number when you leave*
+  (what the mailbox used to do, now for every window) and *Show as it
+  happens*.
 - **A data bar text.** GoldGoal is a LibDataBroker source. EllesmereUI's
   data bars show it as a *Broker Plugin* block; any broker display works.
   It shows today's, the week's, or the total progress; right-click cycles.
@@ -201,8 +224,8 @@ bar; drag the title bar to move it, Escape closes it.
 - **History**: days or weeks against their quotas, today at the top, and
   how many quotas you met.
 - **Settings**: target tiers and the paced tier, deadline, the bar (show, lock, hide in combat, today or week,
-  scale, width, reset position), the gold splash (on, sound, threshold, merge window, scale,
-  height, previews), the data bar text, window scale, *Start
+  scale, width, reset position), the gold splash (on, sound, threshold, merge window, the shop
+  rule, scale, height, previews), the data bar text, window scale, *Start
   a new goal* (clears the history; target, deadline and characters stay),
   *Forget all characters*, *Re-read Syndicator*.
 
@@ -233,9 +256,9 @@ and `/gg` (and the bar, and the broker text) opens it there. Six pages:
 - **Bar**: the show rules and the look (height, font size, width, scale,
   opacity, label, percent, goal colours), *Show me the bar* (brings it up
   for a few seconds whatever the rules say) and the data bar text.
-- **Splash**: what shows, the level editor (every level's gold, saying,
-  size, hold, sound, colour, glow and frame), the celebrations and percent
-  marks, timing and place, a preview per level.
+- **Splash**: what shows (including the shop rule), the level editor
+  (every level's gold, saying, size, hold, sound, colour, glow and frame),
+  the celebrations and percent marks, timing and place, a preview per level.
 - **Colours**: the four colour stops of the goal bars (the end of the run
   is always the EllesmereUI accent), and the window's scale.
 
@@ -295,7 +318,7 @@ lua tests/harness.lua
 | `Widgets.lua` | Buttons, tabs, the dropdown, column headers, list panels, progress bars, stat cells, pooled rows |
 | `GoalEditor.lua` | The goal editor: goal rows, presets, what the quota aims at, the deadline |
 | `Bar.lua` | The on-screen bar |
-| `Splash.lua` | The gold splash: merged gains, levels, animation, sound |
+| `Splash.lua` | The gold splash: merged gains, the shop rule, levels, animation, sound |
 | `Broker.lua` | The LibDataBroker data object |
 | `Tabs.lua` | The Goal, Characters and History tabs |
 | `Settings.lua` | The Settings page and the Settings > AddOns entry |

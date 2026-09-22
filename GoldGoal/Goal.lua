@@ -65,6 +65,7 @@ end
 function ns:ApplyTier()
     local t = self:PacedTier()
     if t then self.db.target = t.gold end
+    self:Invalidate()
 end
 
 -- Moves the pacing up past every tier the total already covers. Never
@@ -185,31 +186,39 @@ function ns:QuotaFor(startTotal, daysLeft)
     return self:Remaining(startTotal) / daysLeft
 end
 
--- This week's quota is the daily quota times the days of this week that
--- are left (never more than the days left to the deadline).
-function ns:WeekQuotaFor(startTotal, now)
+-- This week's quota is the daily quota on the week's first day times the
+-- days of the week from that day on (never more than the days left to the
+-- deadline). Both are taken as of the first day seen this week, so the
+-- figure holds still while the week fills: a week of earnings is measured
+-- against a week of quota even on the day before the reset.
+function ns:WeekQuotaFor(week, now)
     now = now or time()
     local daysLeft = self:DaysLeft(now)
     if not daysLeft then return nil end
-    local daysInWeek = math.min(daysLeft, math.max(1, math.ceil(self:SecondsUntilWeeklyReset(now) / DAY)))
-    return self:QuotaFor(startTotal, daysLeft) * daysInWeek, daysInWeek
+    local weekID, today = self:WeekID(now), self:DayID(now)
+    local firstDay = week.firstDay or self:FirstDayOfWeek(weekID) or today
+    local daysLeftThen = daysLeft + (today - firstDay)
+    local daysInWeek = math.min(daysLeftThen, math.max(1, weekID - firstDay + 1))
+    return self:QuotaFor(week.start, daysLeftThen) * daysInWeek, daysInWeek
 end
 
-function ns:TomorrowQuota(now)
+-- `total` saves pooling the wealth again for a caller that has it.
+function ns:TomorrowQuota(now, total)
     now = now or time()
     local daysLeft = self:DaysLeft(now)
     if not daysLeft or daysLeft <= 1 then return nil end
-    return self:Remaining() / (daysLeft - 1)
+    return self:Remaining(total) / (daysLeft - 1)
 end
 
 -- Recomputes today's and this week's quota from their starting totals (the
 -- target, the deadline or a starting point changed).
 function ns:RefreshQuotas(now)
     now = now or time()
+    self:Invalidate()
     local day = self.db.days[self:DayID(now)]
     if day then day.quota = self:QuotaFor(day.start, self:DaysLeft(now)) end
     local week = self.db.weeks[self:WeekID(now)]
-    if week then week.quota, week.days = self:WeekQuotaFor(week.start, now) end
+    if week then week.quota, week.days = self:WeekQuotaFor(week, now) end
 end
 
 -------------------------------------------------------------------------------
@@ -333,14 +342,30 @@ end
 -------------------------------------------------------------------------------
 -- Projection
 -------------------------------------------------------------------------------
+-- A projection walks the whole ledger, and one gain asks for it from the
+-- bar, the broker, the window and the EllesmereUI page in turn. None of
+-- them writes to it, so while a message is out (ns.dispatching, Core.lua)
+-- the four of them share one reading instead of taking four. Outside a
+-- dispatch every call works it out afresh, so a caller that has just
+-- changed something is never handed yesterday's answer; Invalidate says
+-- so anyway wherever the ledger moves mid-dispatch.
+ns.rev = 0
+function ns:Invalidate()
+    self.rev = self.rev + 1
+end
+
+local cached, cachedFor, cachedRev
+
 function ns:Projection(now)
     now = now or time()
+    local sharing = (self.dispatching or 0) > 0
+    if sharing and cached and cachedFor == now and cachedRev == self.rev then return cached end
     local total = self:TotalWealth()
     local remaining = self:Remaining(total)
     local p = {
         now = now, total = total, remaining = remaining, target = self.db.target,
         deadline = self.db.deadline, daysLeft = self:DaysLeft(now),
-        today = self:TodayEarned(), quota = self:DailyQuota(), tomorrow = self:TomorrowQuota(now),
+        today = self:TodayEarned(), quota = self:DailyQuota(), tomorrow = self:TomorrowQuota(now, total),
         week = self:WeekEarned(), weekQuota = self:WeeklyQuota(),
         avg7 = self:Average(7), avg30 = self:Average(30), avgGoal = self:AverageSinceStart(),
         saved = self:SavedSinceStart(),
@@ -384,7 +409,13 @@ function ns:Projection(now)
         p.tiers[i] = e
         if e.paced then p.tier = e end
     end
-    p.topGold = self:TopTier() and self:TopTier().gold or p.target
+    local top = self:TopTier()
+    p.topGold = top and top.gold or p.target
+    if sharing then
+        cached, cachedFor, cachedRev = p, now, self.rev
+    else
+        cached, cachedFor, cachedRev = nil, nil, nil
+    end
     return p
 end
 
@@ -496,6 +527,13 @@ ns:On("DB_READY", function()
     if (db.schema or 1) < 3 then
         if db.bar.instanceMode == "group" then db.bar.instanceMode = "smart" end
         db.schema = 3
+    end
+    -- schema 4: the mailbox hold became one rule for every shop window,
+    -- and its default became "quiet" (what moves in there is not celebrated)
+    if (db.schema or 1) < 4 then
+        if db.splash.holdMail == false then db.splash.shops = "show" end
+        db.splash.holdMail = nil
+        db.schema = 4
     end
     if not db.tiers or #db.tiers == 0 then
         db.tiers = CopyTiers(ns.TIER_PRESETS.ladder)

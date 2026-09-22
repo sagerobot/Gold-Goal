@@ -102,7 +102,7 @@ function ns:ObserveCrafting()
     while #log > 12 do table.remove(log) end
     for k, v in pairs(wc) do e[k] = v end
     e.updated = time()
-    self:Touch(delta)
+    self:Touch(delta, delta)
 end
 
 -- The last readings: when, and how much the stock and the pools moved.
@@ -127,7 +127,8 @@ function ns:SetCountCrafting(on)
     if self:CountsCrafting() == on then return end
     local before = self:CraftingAtCost()
     self.db.countCrafting = on
-    self:Touch(self:CraftingAtCost() - before)
+    local delta = self:CraftingAtCost() - before
+    self:Touch(delta, delta)
     self:Fire("SETTINGS_CHANGED")
 end
 
@@ -136,7 +137,7 @@ function ns:ForgetCraftingRealm(key)
     if not e then return end
     local delta = self:CountsCrafting() and -ns.CraftingEntryAtCost(e) or 0
     self.db.crafting[key] = nil
-    self:Touch(delta)
+    self:Touch(delta, delta)
 end
 
 -- The breakdown of one realm's entry in a tooltip.

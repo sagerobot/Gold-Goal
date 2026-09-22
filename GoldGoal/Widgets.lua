@@ -24,6 +24,12 @@ local CHECK_ATLAS
 -- Row pools, one per list (the test harness reads them too).
 UI.Pools = { charRows = {}, dayRows = {} }
 
+-- Bumped whenever the looks change, so the progress bars know the fill
+-- under them may have been repainted and their own colour has to go back
+-- on even when it has not changed (see ProgressBar:SetColor).
+UI.fillEpoch = 0
+Style.OnLooksChanged(function() UI.fillEpoch = UI.fillEpoch + 1 end)
+
 -------------------------------------------------------------------------------
 -- Small helpers
 -------------------------------------------------------------------------------
@@ -389,9 +395,16 @@ function UI.ProgressBar(parent, h, size)
         self.fraction, self.fraction2, self.lap = frac, frac2, lap
         if self.Text then self.Text:SetText(text or "") end
     end
-    -- a colour of its own instead of the house fill (the goal bar)
+    -- a colour of its own instead of the house fill (the goal bar). The
+    -- colour is recomputed on every refresh and usually comes back the
+    -- same; repainting it then is three status-bar writes for nothing.
+    -- A looks change repaints the house fill underneath us, so the epoch
+    -- it happened at is part of what has to match.
     function f:SetColor(r, g, b)
-        self.color = { r, g, b }
+        local c = self.color
+        if c and c[1] == r and c[2] == g and c[3] == b and self.colorEpoch == UI.fillEpoch then return end
+        if c then c[1], c[2], c[3] = r, g, b else self.color = { r, g, b } end
+        self.colorEpoch = UI.fillEpoch
         self.Bar:SetStatusBarColor(r, g, b, 0.95)
         self.Under:SetStatusBarColor(r, g, b, 0.95)
         LapColor(self)
@@ -417,8 +430,20 @@ function UI.ProgressBar(parent, h, size)
             end
         end
     end
+    -- The marks are worked out again on every refresh and hardly ever
+    -- move; placing one costs a ClearAllPoints and two SetPoints, so an
+    -- unchanged list is left where it is.
+    local function SameFracs(old, fracs)
+        if not old or #old ~= #fracs then return false end
+        for i = 1, #fracs do
+            if old[i] ~= fracs[i] then return false end
+        end
+        return true
+    end
     function f:SetTicks(fracs)
-        self.tickFracs = fracs or {}
+        fracs = fracs or {}
+        if SameFracs(self.tickFracs, fracs) then return end
+        self.tickFracs = fracs
         for i = #self.Ticks + 1, #self.tickFracs do
             local t = self.TickFrame:CreateTexture(nil, "OVERLAY", nil, 2)
             t:SetWidth(2)
